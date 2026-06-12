@@ -45,20 +45,56 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 	}
 }
 
+// gasTipChanged reports whether the WBFTExtra-encoded GasTip differs between
+// prev and next. nil-safe on either side; treats nil as "no GasTip set".
+// Returns false when both sides are nil.
+func gasTipChanged(prev, next *types.Header) bool {
+	if prev == nil || next == nil {
+		// SetCurrentBlock's caller handles next==nil (returns early). prev==nil
+		// means first-time init, which is already covered by the existing
+		// currentBlock==nil branch; conservatively return false here so this
+		// helper's contract is "compare two valid headers".
+		return false
+	}
+	pt := prev.GasTip()
+	nt := next.GasTip()
+	if pt == nil && nt == nil {
+		return false
+	}
+	if pt == nil || nt == nil {
+		return true
+	}
+	return pt.Cmp(nt) != 0
+}
+
 // SetCurrentBlock updates the current block header and signer.
 // This should be called when the blockchain head changes.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
+	rootChanged := env.currentBlock == nil || env.currentBlock.Root != header.Root
+	tipChanged := gasTipChanged(env.currentBlock, header)
+
+	if rootChanged || tipChanged {
+		prev := env.currentBlock
 		env.currentBlock = header
-		if header.Root != (common.Hash{}) {
-			env.currentState, _ = env.stateAt(header.Root)
-		} else {
-			env.currentState = nil
+		switch {
+		case rootChanged:
+			// Root changed: re-fetch state (existing behaviour preserved).
+			if header.Root != (common.Hash{}) {
+				env.currentState, _ = env.stateAt(header.Root)
+			} else {
+				env.currentState = nil
+			}
+			env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+		default:
+			// Root same + GasTip changed (empty block with governance minTip update).
+			// currentState is identical to prev state — skip stateAt to avoid
+			// redundant cost. signer may advance with header.Number, recompute safely.
+			env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+			_ = prev // explicitly referenced; suppresses unused-variable lint
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
 }
 

@@ -904,3 +904,52 @@ func TestPricedListIntegration(t *testing.T) {
 
 	t.Logf("=== All test cases passed! ===")
 }
+
+// TestRemotesBelowTip_PrefersCachedAnzeonTipCap verifies that RemotesBelowTip
+// uses the AnzeonTipCap cached at admission time (the value that actually drives
+// EffectiveGasTip during block inclusion) instead of tx.GasTipCap(). Both txs
+// share the same GasTipCap (100) which is above the threshold (70), but the
+// cached tx has an effective tip of 50 — below threshold — so only it must be
+// reported as droppable. Before the fix neither tx would be dropped, leaving a
+// dead transaction stuck in the pending pool.
+func TestRemotesBelowTip_PrefersCachedAnzeonTipCap(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+
+	txCached := dynamicFeeTx(0, 21000, big.NewInt(200), big.NewInt(100), key)
+	txCached.SetAnzeonTipCap(big.NewInt(50))                                 // effective tip below threshold
+	txPlain := dynamicFeeTx(1, 21000, big.NewInt(200), big.NewInt(100), key) // no cache; GasTipCap == 100
+
+	lookup := newLookup()
+	lookup.Add(txCached, false) // remote
+	lookup.Add(txPlain, false)  // remote
+
+	found := lookup.RemotesBelowTip(big.NewInt(70))
+	if len(found) != 1 {
+		t.Fatalf("RemotesBelowTip returned %d txs, want 1", len(found))
+	}
+	if found[0].Hash() != txCached.Hash() {
+		t.Fatalf("expected cached tx (hash %x) in drop set, got %x", txCached.Hash(), found[0].Hash())
+	}
+}
+
+// TestRemotesBelowTip_FallsBackToGasTipCapWhenNoCache is a regression guard:
+// when no AnzeonTipCap is cached (Anzeon disabled or pre-Anzeon admission path)
+// the comparison falls back to tx.GasTipCap().
+func TestRemotesBelowTip_FallsBackToGasTipCapWhenNoCache(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+
+	txLow := dynamicFeeTx(0, 21000, big.NewInt(200), big.NewInt(50), key)   // GasTipCap < threshold
+	txHigh := dynamicFeeTx(1, 21000, big.NewInt(200), big.NewInt(200), key) // GasTipCap >= threshold
+
+	lookup := newLookup()
+	lookup.Add(txLow, false)
+	lookup.Add(txHigh, false)
+
+	found := lookup.RemotesBelowTip(big.NewInt(100))
+	if len(found) != 1 {
+		t.Fatalf("RemotesBelowTip returned %d txs, want 1", len(found))
+	}
+	if found[0].Hash() != txLow.Hash() {
+		t.Fatalf("expected txLow in drop set, got hash %x", found[0].Hash())
+	}
+}

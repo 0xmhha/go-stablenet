@@ -2058,7 +2058,15 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
 func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 	found := make(types.Transactions, 0, 128)
 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
-		if tx.GasTipCapIntCmp(threshold) < 0 {
+		// Prefer the AnzeonTipCap cached at admission time: that is the value
+		// that drives EffectiveGasTip during block inclusion, so the drop
+		// decision must use it too. Fall back to tx.GasTipCap() only when no
+		// cache is attached (Anzeon disabled or pre-Anzeon admission path).
+		tipCap := tx.GasTipCap()
+		if cached := tx.GetAnzeonTipCap(); cached != nil {
+			tipCap = cached
+		}
+		if tipCap.Cmp(threshold) < 0 {
 			found = append(found, tx)
 		}
 		return true
