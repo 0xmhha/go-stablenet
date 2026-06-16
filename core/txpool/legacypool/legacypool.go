@@ -2069,6 +2069,22 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
 }
 
 // RemotesBelowTip finds all remote transactions below the given tip threshold.
+//
+// NOTE (PR-77 fix, LOCAL-20260616_031104): this uses the RAW tx.GasTipCap
+// rather than the effective Anzeon tip (which would account for the
+// unauthorized-account header-tip rule). This is intentional at this commit:
+//   - RemotesBelowTip only fires from LegacyPool.SetGasTip on a tip INCREASE.
+//   - On a tip increase, any unauthorized tx whose tx.GasTipCap >= newTip but
+//     whose effective tip (= header.GasTip < newTip) is below the new threshold
+//     is NOT evicted here. However, it WILL be filtered out by
+//     LegacyPool.Pending's EffectiveGasTipIntCmp check, which uses the live
+//     AnzeonGasTipEnv (see core/types/transaction.go EffectiveGasTip). The net
+//     effect — the tx does not enter a block — is the same; it just lingers in
+//     the pool until the eviction ticker or a state change collects it.
+//   - Switching the comparison here to EffectiveGasTipIntCmp would require
+//     threading AnzeonGasTipEnv into the lookup type (large blast radius) and
+//     is out of scope for the restoration fix. Track as a follow-up if the
+//     lingering memory cost becomes measurable.
 func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 	found := make(types.Transactions, 0, 128)
 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
