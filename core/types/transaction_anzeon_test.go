@@ -24,15 +24,15 @@ import (
 
 // mockAnzeonEnv is a minimal AnzeonGasTipEnv for testing EffectiveGasTip.
 type mockAnzeonEnv struct {
-	baseFee    *big.Int
-	anzeonTip  *big.Int // value returned by GetAnzeonTipCap
-	isAnzeon   bool
+	baseFee   *big.Int
+	anzeonTip *big.Int // value returned by GetAnzeonTipCap
+	isAnzeon  bool
 }
 
-func (m *mockAnzeonEnv) IsAnzeon() bool                              { return m.isAnzeon }
-func (m *mockAnzeonEnv) GetBaseFee() *big.Int                        { return m.baseFee }
-func (m *mockAnzeonEnv) GetAnzeonTipCap(_ *Transaction) *big.Int     { return m.anzeonTip }
-func (m *mockAnzeonEnv) SetCurrentBlock(_ *Header)                   {}
+func (m *mockAnzeonEnv) IsAnzeon() bool                          { return m.isAnzeon }
+func (m *mockAnzeonEnv) GetBaseFee() *big.Int                    { return m.baseFee }
+func (m *mockAnzeonEnv) GetAnzeonTipCap(_ *Transaction) *big.Int { return m.anzeonTip }
+func (m *mockAnzeonEnv) SetCurrentBlock(_ *Header)               {}
 
 // TestTransaction_AnzeonTipCap_ClearAndRefresh verifies Set/Get/Clear semantics
 // on the atomic.Pointer[big.Int]-backed anzeonTipCap field.
