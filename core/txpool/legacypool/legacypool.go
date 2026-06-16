@@ -483,6 +483,16 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	}
 
 	pool.gasTip.Store(newTip)
+
+	// Invalidate the per-tx anzeonTipCap cache across all pooled txs.
+	// The cache snapshotted the header.GasTip at admission; any minTip change
+	// (governance proposeGasTip up or down) makes that snapshot stale. Without
+	// this, EffectiveGasTip() keeps returning the old value, causing the "stuck
+	// in pending pool" symptom on minTip restoration (LOCAL-20260616_055857).
+	// Authorized-account txs are unaffected: GetAnzeonTipCap() for them returns
+	// tx.GasTipCap() anyway, so re-caching yields the same value.
+	pool.invalidateAnzeonTipCache()
+
 	// If the min miner fee increased, remove transactions below the new threshold
 	if newTip.Cmp(old) > 0 {
 		// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
@@ -493,6 +503,17 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 		pool.priced.Removed(len(drop))
 	}
 	log.Info("Legacy pool tip threshold updated", "tip", newTip)
+}
+
+// invalidateAnzeonTipCache clears the per-tx anzeonTipCap cache for every
+// transaction currently tracked by the pool. MUST be called with pool.mu held.
+// This maintains the (anzeonTipCap mirrors header.GasTip) invariant — every
+// minTip change point must invoke it so the next EffectiveGasTip call recomputes.
+func (pool *LegacyPool) invalidateAnzeonTipCache() {
+	pool.all.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+		tx.ClearAnzeonTipCap()
+		return true
+	}, true, true)
 }
 
 // Nonce returns the next nonce of an account, with all transactions executable
