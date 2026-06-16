@@ -467,8 +467,18 @@ func (pool *LegacyPool) SubscribeTransactions(ch chan<- core.NewTxsEvent, reorgs
 	return pool.txFeed.Subscribe(ch)
 }
 
-// SetGasTip updates the minimum gas tip required by the transaction pool for a
-// new transaction, and drops all transactions below this threshold.
+// SetGasTip updates the minimum gas tip required by the transaction pool and
+// reconciles the pool against the new policy. When the new tip differs in
+// either direction, this method:
+//  1. Stores the new threshold.
+//  2. Invalidates every remote tx's cached Anzeon tip cap so the next
+//     validation refreshes it from the current header.
+//  3. Drops any remote tx whose effective gas tip (computed against the
+//     current AnzeonTipEnv) is now below the new threshold.
+//  4. Reheaps the priced index so ordering reflects the new effective tips.
+//
+// All work is performed under pool.mu to preserve stablenet-invariants §11b
+// (txpool maps mutated only by pool.loop()/runReorg-equivalent paths).
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
@@ -483,16 +493,32 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	}
 
 	pool.gasTip.Store(newTip)
-	// If the min miner fee increased, remove transactions below the new threshold
-	if newTip.Cmp(old) > 0 {
-		// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
-		drop := pool.all.RemotesBelowTip(pool.anzeonTipEnv, tip)
-		for _, tx := range drop {
-			pool.removeTx(tx.Hash(), false, true)
-		}
-		pool.priced.Removed(len(drop))
+
+	// Invalidate per-tx anzeonTipCap cache for every remote tx so the next
+	// validation pass repopulates it against the *current* header tip. This
+	// is required because the cache was set once at admit-time and would
+	// otherwise pin an outdated effective tip.
+	pool.all.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
+		tx.InvalidateAnzeonTipCap()
+		return true
+	}, false, true) // remotes only
+
+	// Drop any remote tx whose effective gas tip is now below the new
+	// threshold. Compare via the same metric used by Pending() and
+	// priceHeap.cmp, so all three consumers agree.
+	// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
+	drop := pool.all.RemotesBelowTip(pool.anzeonTipEnv, tip)
+	for _, tx := range drop {
+		pool.removeTx(tx.Hash(), false, true)
 	}
-	log.Info("Legacy pool tip threshold updated", "tip", newTip)
+	pool.priced.Removed(len(drop))
+
+	// Reorder the priced index now that effective tips may have changed for
+	// surviving txs (their cache was just invalidated).
+	pool.priced.Reheap()
+
+	log.Info("Legacy pool tip threshold updated",
+		"newTip", newTip, "oldTip", old, "dropped", len(drop))
 }
 
 // Nonce returns the next nonce of an account, with all transactions executable
