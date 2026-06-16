@@ -73,8 +73,8 @@ type Transaction struct {
 	// WEMIX fee delegation
 	feePayer atomic.Value
 
-	// Anzeon gas tip cap cache (set during pool validation, used during reheap)
-	anzeonTipCap atomic.Value
+	// Anzeon gas tip cap cache (set during pool validation, used during reheap, cleared on minTip change)
+	anzeonTipCap atomic.Pointer[big.Int]
 }
 
 // NewTx creates a new transaction.
@@ -410,19 +410,26 @@ func (tx *Transaction) EffectiveGasTipValue(anzeonTipEnv AnzeonGasTipEnv) *big.I
 }
 
 // SetAnzeonTipCap caches the Anzeon tip cap for this transaction.
-// This is set during pool validation to avoid repeated state queries during reheap.
+// Safe for concurrent use. Stores a private copy so the caller cannot mutate it.
 func (tx *Transaction) SetAnzeonTipCap(tipCap *big.Int) {
-	if tipCap != nil {
-		tx.anzeonTipCap.Store(new(big.Int).Set(tipCap))
+	if tipCap == nil {
+		return
 	}
+	tx.anzeonTipCap.Store(new(big.Int).Set(tipCap))
 }
 
 // GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached.
 func (tx *Transaction) GetAnzeonTipCap() *big.Int {
-	if cached := tx.anzeonTipCap.Load(); cached != nil {
-		return cached.(*big.Int)
-	}
-	return nil
+	return tx.anzeonTipCap.Load()
+}
+
+// ClearAnzeonTipCap invalidates the cached Anzeon tip cap.
+// Called when the network minTip (block header GasTip) changes via governance,
+// or when the pool resets to a new head whose header.GasTip differs from the previous one.
+// Safe for concurrent use; subsequent EffectiveGasTip() calls will recompute via the
+// current AnzeonTipEnv (using the up-to-date header.GasTip for unauthorized accounts).
+func (tx *Transaction) ClearAnzeonTipCap() {
+	tx.anzeonTipCap.Store(nil)
 }
 
 // EffectiveGasTipCmp compares the effective gasTipCap of two transactions assuming the given base fee.
