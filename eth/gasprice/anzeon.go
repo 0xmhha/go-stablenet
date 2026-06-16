@@ -47,19 +47,38 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 
 // SetCurrentBlock updates the current block header and signer.
 // This should be called when the blockchain head changes.
+// The block is refreshed if EITHER the state root OR the GasTip value changes,
+// so callers that rely on env.currentBlock.GasTip() (the source for unauthorized
+// effective tips) get a coherent snapshot.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
+	rootChanged := env.currentBlock == nil || env.currentBlock.Root != header.Root
+	gasTipChanged := env.currentBlock == nil ||
+		anzeonGasTipChanged(env.currentBlock.GasTip(), header.GasTip())
+	if rootChanged || gasTipChanged {
 		env.currentBlock = header
-		if header.Root != (common.Hash{}) {
-			env.currentState, _ = env.stateAt(header.Root)
-		} else {
-			env.currentState = nil
+		if rootChanged {
+			if header.Root != (common.Hash{}) {
+				env.currentState, _ = env.stateAt(header.Root)
+			} else {
+				env.currentState = nil
+			}
+			env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+}
+
+// anzeonGasTipChanged reports whether two GasTip values differ. nil-safe.
+func anzeonGasTipChanged(a, b *big.Int) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	return a.Cmp(b) != 0
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
