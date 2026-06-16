@@ -387,6 +387,11 @@ func (tx *Transaction) GasTipCapIntCmp(other *big.Int) int {
 // the actual negative value, _and_ ErrGasFeeCapTooLow
 func (tx *Transaction) EffectiveGasTip(anzeonTipEnv AnzeonGasTipEnv) (*big.Int, error) {
 	if anzeonTipEnv == nil || anzeonTipEnv.GetBaseFee() == nil {
+		// No live env: prefer the per-tx cache (set during pool validation),
+		// and fall back to the raw tx GasTipCap when the cache is empty.
+		if cached := tx.GetAnzeonTipCap(); cached != nil {
+			return cached, nil
+		}
 		return tx.GasTipCap(), nil
 	}
 	var err error
@@ -394,10 +399,19 @@ func (tx *Transaction) EffectiveGasTip(anzeonTipEnv AnzeonGasTipEnv) (*big.Int, 
 	if gasFeeCap.Cmp(anzeonTipEnv.GetBaseFee()) == -1 {
 		err = ErrGasFeeCapTooLow
 	}
-	// Use cached tipCap if available, otherwise fetch from anzeonTipEnv
-	tipCap := tx.GetAnzeonTipCap()
+	// Prefer the live env lookup so that header-tip changes (e.g., after a
+	// governance gasTip restoration on an empty block) are reflected
+	// immediately. The per-tx cache is consulted only as a fallback when the
+	// env cannot produce a value (currently unreachable in production, but
+	// keeps the optimization intact for authorized senders and for any future
+	// env-less reheap path).
+	tipCap := anzeonTipEnv.GetAnzeonTipCap(tx)
 	if tipCap == nil {
-		tipCap = anzeonTipEnv.GetAnzeonTipCap(tx)
+		if cached := tx.GetAnzeonTipCap(); cached != nil {
+			tipCap = cached
+		} else {
+			tipCap = tx.GasTipCap()
+		}
 	}
 	return math.BigMin(tipCap, new(big.Int).Sub(gasFeeCap, anzeonTipEnv.GetBaseFee())), err
 }

@@ -560,3 +560,112 @@ func BenchmarkHash(b *testing.B) {
 		signer.Hash(tx)
 	}
 }
+
+// stubAnzeonEnv is a minimal AnzeonGasTipEnv implementation for
+// EffectiveGasTip unit tests. It always reports itself as Anzeon-enabled and
+// returns the configured tip for every tx (simulating the unauthorized-sender
+// path where the effective tip == header.GasTip).
+type stubAnzeonEnv struct {
+	baseFee *big.Int
+	tipCap  *big.Int // returned by GetAnzeonTipCap; nil means "no answer"
+}
+
+func (e *stubAnzeonEnv) IsAnzeon() bool                              { return true }
+func (e *stubAnzeonEnv) GetBaseFee() *big.Int                        { return e.baseFee }
+func (e *stubAnzeonEnv) GetAnzeonTipCap(_ *Transaction) *big.Int     { return e.tipCap }
+func (e *stubAnzeonEnv) SetCurrentBlock(_ *Header)                   {}
+
+// makeDynTx returns a signed DynamicFeeTx with the given GasTipCap and
+// GasFeeCap (both in wei).
+func makeDynTx(gasTipCap, gasFeeCap int64) *Transaction {
+	signer := NewLondonSigner(big.NewInt(1))
+	key, _ := crypto.GenerateKey()
+	tx, err := SignTx(NewTx(&DynamicFeeTx{
+		ChainID:   big.NewInt(1),
+		Nonce:     0,
+		GasFeeCap: big.NewInt(gasFeeCap),
+		GasTipCap: big.NewInt(gasTipCap),
+		Gas:       21000,
+	}), signer, key)
+	if err != nil {
+		panic("makeDynTx: " + err.Error())
+	}
+	return tx
+}
+
+// TestEffectiveGasTip_PrefersEnvOverCache verifies that when an AnzeonGasTipEnv
+// is present and returns a different value from the per-tx cache, the env wins.
+// This is the core fix for LOCAL-20260616_031104: the restoration tx's stale
+// cached tip must NOT override the live header GasTip.
+func TestEffectiveGasTip_PrefersEnvOverCache(t *testing.T) {
+	baseFee := big.NewInt(1000)
+	envTip := big.NewInt(27600)    // what the env says (restored tip)
+	cachedTip := big.NewInt(30000) // what the stale cache says (old tip)
+
+	// GasFeeCap is large enough that it does not constrain the result.
+	tx := makeDynTx(1e9, 1e12)
+	tx.SetAnzeonTipCap(cachedTip)
+
+	env := &stubAnzeonEnv{baseFee: baseFee, tipCap: envTip}
+	got, err := tx.EffectiveGasTip(env)
+	if err != nil {
+		t.Fatalf("EffectiveGasTip returned unexpected error: %v", err)
+	}
+	// Result is min(envTip, gasFeeCap - baseFee). Since gasFeeCap >> baseFee
+	// and envTip is small, we expect envTip.
+	if got.Cmp(envTip) != 0 {
+		t.Fatalf("EffectiveGasTip = %v; want env value %v (not stale cache %v)", got, envTip, cachedTip)
+	}
+}
+
+// TestEffectiveGasTip_FallsBackToCacheWhenEnvNil verifies that when the env is
+// nil, the per-tx cache is returned (no regression on the non-env path).
+func TestEffectiveGasTip_FallsBackToCacheWhenEnvNil(t *testing.T) {
+	cachedTip := big.NewInt(27600)
+	tx := makeDynTx(1e9, 1e12)
+	tx.SetAnzeonTipCap(cachedTip)
+
+	got, err := tx.EffectiveGasTip(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cmp(cachedTip) != 0 {
+		t.Fatalf("EffectiveGasTip(nil env) = %v; want cached value %v", got, cachedTip)
+	}
+}
+
+// TestEffectiveGasTip_FallsBackToRawGasTipCapWhenAllNil verifies that when
+// both env and cache are nil, the raw tx.GasTipCap is returned.
+func TestEffectiveGasTip_FallsBackToRawGasTipCapWhenAllNil(t *testing.T) {
+	rawTip := big.NewInt(5000)
+	tx := makeDynTx(rawTip.Int64(), 1e12)
+	// cache is not set (nil)
+
+	got, err := tx.EffectiveGasTip(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cmp(rawTip) != 0 {
+		t.Fatalf("EffectiveGasTip(nil env, nil cache) = %v; want raw GasTipCap %v", got, rawTip)
+	}
+}
+
+// TestEffectiveGasTip_EnvNilResponse_FallsBackToCache verifies that when the
+// env is present but GetAnzeonTipCap returns nil (unreachable in production
+// today, but supported as a fallback), the per-tx cache is used.
+func TestEffectiveGasTip_EnvNilResponse_FallsBackToCache(t *testing.T) {
+	baseFee := big.NewInt(1000)
+	cachedTip := big.NewInt(27600)
+	tx := makeDynTx(1e9, 1e12)
+	tx.SetAnzeonTipCap(cachedTip)
+
+	// env returns nil from GetAnzeonTipCap
+	env := &stubAnzeonEnv{baseFee: baseFee, tipCap: nil}
+	got, err := tx.EffectiveGasTip(env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Cmp(cachedTip) != 0 {
+		t.Fatalf("EffectiveGasTip(env returns nil) = %v; want cached value %v", got, cachedTip)
+	}
+}
