@@ -332,8 +332,10 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 		}
 	*/
 
-	// Cache the Anzeon tip cap to avoid repeated state queries during reheap
-	// Only cache if not already set (to preserve original value during reinject)
+	// Cache the Anzeon tip cap to avoid repeated state queries during reheap.
+	// The cache is invalidated by LegacyPool.SetGasTip and LegacyPool.reset when
+	// the network minTip (header GasTip) changes — re-validation then re-populates
+	// it via this nil-guarded path with the up-to-date AnzeonTipEnv.
 	if opts.AnzeonTipEnv != nil && tx.GetAnzeonTipCap() == nil {
 		tipCap := opts.AnzeonTipEnv.GetAnzeonTipCap(tx)
 		tx.SetAnzeonTipCap(tipCap)
