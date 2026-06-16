@@ -47,19 +47,37 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 
 // SetCurrentBlock updates the current block header and signer.
 // This should be called when the blockchain head changes.
+//
+// The header object is always replaced so that fields such as GasTip,
+// BaseFee, and Number are immediately visible to callers (e.g.
+// GetAnzeonTipCap returns the correct header tip for unauthorized senders).
+// The expensive stateAt call and signer creation are skipped only when the
+// state root has not changed, preserving the cost of empty-block sequences.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
-		if header.Root != (common.Hash{}) {
-			env.currentState, _ = env.stateAt(header.Root)
-		} else {
-			env.currentState = nil
-		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+	prev := env.currentBlock
+
+	// Always adopt the new header object — header.GasTip / header.BaseFee /
+	// header.Number can change even when the post-block state root is identical
+	// to the parent (empty blocks). Keeping a stale env.currentBlock makes
+	// GetAnzeonTipCap return the wrong header tip for unauthorized senders.
+	env.currentBlock = header
+
+	// state(root) didn't actually change — preserve cached stateDB and signer
+	// to avoid redundant stateAt calls. Number/Time used by MakeSigner are not
+	// signing-relevant for the historic blocks; same root => same chain segment.
+	if prev != nil && prev.Root == header.Root && env.currentState != nil && env.signer != nil {
+		return
 	}
+
+	if header.Root != (common.Hash{}) {
+		env.currentState, _ = env.stateAt(header.Root)
+	} else {
+		env.currentState = nil
+	}
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
