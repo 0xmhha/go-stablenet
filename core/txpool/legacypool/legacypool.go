@@ -1556,10 +1556,30 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 	pool.pendingNonces = newNoncer(statedb)
 	pool.anzeonTipEnv.SetCurrentBlock(newHead) // update tip env if new head is given
 
+	// If governance changed the network minTip across this head transition, invalidate
+	// every pooled tx's anzeonTipCap snapshot so the next EffectiveGasTip call recomputes
+	// against the new header.GasTip. This is the "head-transition" sibling of SetGasTip's
+	// invalidation — defends against paths where header.GasTip changes without going
+	// through worker.setGasTipUnsafe → pool.SetGasTip (e.g. catch-up sync, deep reorg).
+	if oldHead != nil && anzeonGasTipChanged(oldHead.GasTip(), newHead.GasTip()) {
+		pool.invalidateAnzeonTipCache()
+	}
+
 	// Inject any transactions discarded due to reorgs
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	core.SenderCacher.Recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
+}
+
+// anzeonGasTipChanged reports whether two GasTip values differ. nil-safe.
+func anzeonGasTipChanged(a, b *big.Int) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	return a.Cmp(b) != 0
 }
 
 // promoteExecutables moves transactions that have become processable from the
