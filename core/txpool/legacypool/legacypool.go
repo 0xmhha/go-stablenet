@@ -486,7 +486,7 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	// If the min miner fee increased, remove transactions below the new threshold
 	if newTip.Cmp(old) > 0 {
 		// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
-		drop := pool.all.RemotesBelowTip(tip)
+		drop := pool.all.RemotesBelowTip(pool.anzeonTipEnv, tip)
 		for _, tx := range drop {
 			pool.removeTx(tx.Hash(), false, true)
 		}
@@ -2054,11 +2054,21 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
 	return migrated
 }
 
-// RemotesBelowTip finds all remote transactions below the given tip threshold.
-func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
+// RemotesBelowTip finds all remote transactions whose effective gas tip is
+// below the given threshold. When env is non-nil and Anzeon is enabled, the
+// effective tip is computed via tx.EffectiveGasTipIntCmp (using cache iii),
+// matching the same metric used by Pending() and priceHeap.cmp. When env is
+// nil (non-Anzeon paths / tests), we fall back to the declared cap.
+func (t *lookup) RemotesBelowTip(env types.AnzeonGasTipEnv, threshold *big.Int) types.Transactions {
 	found := make(types.Transactions, 0, 128)
 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
-		if tx.GasTipCapIntCmp(threshold) < 0 {
+		var below bool
+		if env != nil && env.IsAnzeon() && env.GetBaseFee() != nil {
+			below = tx.EffectiveGasTipIntCmp(threshold, env) < 0
+		} else {
+			below = tx.GasTipCapIntCmp(threshold) < 0
+		}
+		if below {
 			found = append(found, tx)
 		}
 		return true

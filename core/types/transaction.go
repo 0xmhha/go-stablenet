@@ -410,19 +410,37 @@ func (tx *Transaction) EffectiveGasTipValue(anzeonTipEnv AnzeonGasTipEnv) *big.I
 }
 
 // SetAnzeonTipCap caches the Anzeon tip cap for this transaction.
-// This is set during pool validation to avoid repeated state queries during reheap.
+// nil input is ignored; use InvalidateAnzeonTipCap to clear the cache.
 func (tx *Transaction) SetAnzeonTipCap(tipCap *big.Int) {
 	if tipCap != nil {
 		tx.anzeonTipCap.Store(new(big.Int).Set(tipCap))
 	}
 }
 
-// GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached.
+// InvalidateAnzeonTipCap clears the cached Anzeon tip cap. Used when the
+// effective tip policy changes (e.g. governance gasTip update) so the next
+// validation pass refreshes the cache against the current header.
+//
+// We store a typed nil (*big.Int)(nil) because atomic.Value requires a
+// consistent concrete type after the first Store, but readers handle
+// nil via the explicit (*big.Int)(nil) check below.
+func (tx *Transaction) InvalidateAnzeonTipCap() {
+	var zero *big.Int
+	tx.anzeonTipCap.Store(zero)
+}
+
+// GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached
+// (including an explicitly-invalidated cache).
 func (tx *Transaction) GetAnzeonTipCap() *big.Int {
-	if cached := tx.anzeonTipCap.Load(); cached != nil {
-		return cached.(*big.Int)
+	cached := tx.anzeonTipCap.Load()
+	if cached == nil {
+		return nil
 	}
-	return nil
+	v, ok := cached.(*big.Int)
+	if !ok || v == nil {
+		return nil
+	}
+	return v
 }
 
 // EffectiveGasTipCmp compares the effective gasTipCap of two transactions assuming the given base fee.
