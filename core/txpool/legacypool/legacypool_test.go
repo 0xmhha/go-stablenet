@@ -3069,6 +3069,108 @@ func TestMinimumGasFeeValidation(t *testing.T) {
 	})
 }
 
+// TestSetGasTipClearsRemoteAnzeonCache verifies the §5.2b invariant: after
+// every LegacyPool.SetGasTip call, all remote txs in the pool have their
+// Anzeon tip cap cache cleared (GetAnzeonTipCap returns nil), so the next
+// EffectiveGasTip evaluation consults the live env.
+//
+// Covers LOCAL-20260616_031104 Step 3.
+func TestSetGasTipClearsRemoteAnzeonCache(t *testing.T) {
+	t.Parallel()
+
+	pool, _ := setupPool()
+	defer pool.Close()
+
+	// Use a fresh key as the remote sender (not local).
+	remoteKey, _ := crypto.GenerateKey()
+	remoteAddr := crypto.PubkeyToAddress(remoteKey.PublicKey)
+	testAddBalance(pool, remoteAddr, big.NewInt(1000000000000))
+
+	// Add a remote tx with gasTip=1 (default pool threshold starts low).
+	tx1 := pricedTransaction(0, 100000, big.NewInt(1), remoteKey)
+	if err := pool.addRemoteSync(tx1); err != nil {
+		t.Fatalf("failed to add remote tx: %v", err)
+	}
+
+	// Manually stamp the cache (simulates what ValidateTransactionWithState does).
+	tx1.SetAnzeonTipCap(big.NewInt(27600))
+	if got := tx1.GetAnzeonTipCap(); got == nil || got.Cmp(big.NewInt(27600)) != 0 {
+		t.Fatalf("precondition: expected cached tip 27600, got %v", got)
+	}
+
+	// Increase gasTip — tx1's GasTipCap(=1) < new threshold so it gets evicted.
+	pool.SetGasTip(big.NewInt(2))
+
+	// tx1 should be gone.
+	if pool.Get(tx1.Hash()) != nil {
+		t.Fatal("tx1 should have been evicted on tip increase")
+	}
+
+	// Add a second remote tx that survives the new threshold.
+	remoteKey2, _ := crypto.GenerateKey()
+	remoteAddr2 := crypto.PubkeyToAddress(remoteKey2.PublicKey)
+	testAddBalance(pool, remoteAddr2, big.NewInt(1000000000000))
+
+	tx2 := pricedTransaction(0, 100000, big.NewInt(10), remoteKey2)
+	if err := pool.addRemoteSync(tx2); err != nil {
+		t.Fatalf("failed to add surviving remote tx: %v", err)
+	}
+	// Stamp tx2's cache.
+	tx2.SetAnzeonTipCap(big.NewInt(27600))
+
+	// Decrease gasTip (restoration scenario): cache must be cleared on ALL remotes.
+	pool.SetGasTip(big.NewInt(1))
+
+	// §5.2b invariant: no remote tx carries a stale cached tip after SetGasTip.
+	pool.mu.RLock()
+	pool.all.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+		if got := tx.GetAnzeonTipCap(); got != nil {
+			t.Errorf("remote tx %s still carries cached Anzeon tip %v after SetGasTip", tx.Hash().Hex(), got)
+		}
+		return true
+	}, false, true)
+	pool.mu.RUnlock()
+}
+
+// TestSetAnzeonTipCap_NilSafe verifies that calling SetAnzeonTipCap(nil) does
+// not panic and leaves GetAnzeonTipCap returning nil, and that ClearAnzeonTipCap
+// is idempotent.
+func TestSetAnzeonTipCap_NilSafe(t *testing.T) {
+	t.Parallel()
+
+	tx := types.NewTx(&types.DynamicFeeTx{
+		ChainID:   big.NewInt(1),
+		GasTipCap: big.NewInt(1000),
+		GasFeeCap: big.NewInt(2000),
+		Gas:       21000,
+	})
+
+	// Store a value first.
+	tx.SetAnzeonTipCap(big.NewInt(27600))
+	if got := tx.GetAnzeonTipCap(); got == nil {
+		t.Fatal("expected non-nil after SetAnzeonTipCap(27600)")
+	}
+
+	// SetAnzeonTipCap(nil) must not panic and must clear the cache.
+	tx.SetAnzeonTipCap(nil)
+	if got := tx.GetAnzeonTipCap(); got != nil {
+		t.Fatalf("expected nil after SetAnzeonTipCap(nil), got %v", got)
+	}
+
+	// ClearAnzeonTipCap is idempotent.
+	tx.ClearAnzeonTipCap()
+	if got := tx.GetAnzeonTipCap(); got != nil {
+		t.Fatalf("expected nil after ClearAnzeonTipCap(), got %v", got)
+	}
+
+	// Set again and clear via the explicit helper.
+	tx.SetAnzeonTipCap(big.NewInt(30000))
+	tx.ClearAnzeonTipCap()
+	if got := tx.GetAnzeonTipCap(); got != nil {
+		t.Fatalf("expected nil after SetAnzeonTipCap+ClearAnzeonTipCap, got %v", got)
+	}
+}
+
 // Benchmarks the speed of validating the contents of the pending queue of the
 // transaction pool.
 func BenchmarkPendingDemotion100(b *testing.B)   { benchmarkPendingDemotion(b, 100) }

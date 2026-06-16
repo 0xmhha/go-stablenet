@@ -492,6 +492,20 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 		}
 		pool.priced.Removed(len(drop))
 	}
+
+	// Invalidate the cached Anzeon tip cap on every remote tx so the next
+	// EffectiveGasTip evaluation reflects the new network gasTip.
+	//
+	// Authorized senders' effective tip is always tx.GasTipCap() (immutable),
+	// and local txs are exempt from the unauthorized-sender header-tip rule,
+	// so only remote txs need the cache cleared. Iteration is under pool.mu
+	// (RI #11 concurrency discipline). tx.ClearAnzeonTipCap uses
+	// atomic.Pointer.Store(nil) which is race-free with concurrent readers.
+	pool.all.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+		tx.ClearAnzeonTipCap()
+		return true
+	}, false, true) // locals=false, remotes=true
+
 	log.Info("Legacy pool tip threshold updated", "tip", newTip)
 }
 
