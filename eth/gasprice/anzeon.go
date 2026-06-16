@@ -47,19 +47,51 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 
 // SetCurrentBlock updates the current block header and signer.
 // This should be called when the blockchain head changes.
+//
+// The header is refreshed whenever the new header carries a different state
+// root, a different GasTip (which can change without a state-root change on
+// empty blocks — header.GasTip reflects the parent block's end-of-block
+// governance state), or a different block number. The state DB is reloaded
+// only when the state root actually changes, so repeated calls with identical
+// roots remain cheap.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
+	var (
+		rootChanged    = env.currentBlock == nil || env.currentBlock.Root != header.Root
+		gasTipChanged  = env.currentBlock == nil || !sameGasTip(env.currentBlock, header)
+		numberAdvanced = env.currentBlock == nil || env.currentBlock.Number == nil ||
+			header.Number == nil || env.currentBlock.Number.Cmp(header.Number) != 0
+	)
+	if !rootChanged && !gasTipChanged && !numberAdvanced {
+		return
+	}
+	env.currentBlock = header
+	if rootChanged {
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+}
+
+// sameGasTip returns true when the two headers carry the same WBFTExtra GasTip.
+// Extraction failure or nil GasTip is treated as nil-equals-nil so that
+// non-WBFT headers (which have no meaningful GasTip field) are handled
+// consistently.
+func sameGasTip(a, b *types.Header) bool {
+	tipA := a.GasTip()
+	tipB := b.GasTip()
+	if tipA == nil && tipB == nil {
+		return true
+	}
+	if tipA == nil || tipB == nil {
+		return false
+	}
+	return tipA.Cmp(tipB) == 0
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
