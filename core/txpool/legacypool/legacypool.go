@@ -471,7 +471,6 @@ func (pool *LegacyPool) SubscribeTransactions(ch chan<- core.NewTxsEvent, reorgs
 // new transaction, and drops all transactions below this threshold.
 func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	pool.mu.Lock()
-	defer pool.mu.Unlock()
 
 	var (
 		newTip = uint256.MustFromBig(tip)
@@ -479,20 +478,49 @@ func (pool *LegacyPool) SetGasTip(tip *big.Int) {
 	)
 
 	if newTip.Cmp(old) == 0 {
+		pool.mu.Unlock()
 		return
 	}
 
 	pool.gasTip.Store(newTip)
-	// If the min miner fee increased, remove transactions below the new threshold
-	if newTip.Cmp(old) > 0 {
+
+	var promoteSet *accountSet // populated only on lowering; consumed AFTER unlock
+	switch newTip.Cmp(old) {
+	case 1:
+		// Raising: drop underpriced remote txs (existing semantics, unchanged).
 		// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
 		drop := pool.all.RemotesBelowTip(tip)
 		for _, tx := range drop {
 			pool.removeTx(tx.Hash(), false, true)
 		}
 		pool.priced.Removed(len(drop))
+	case -1:
+		// Lowering: previously a no-op. Now (i) clear per-tx anzeonTipCap
+		// caches so EffectiveGasTip recomputes against the new env on
+		// next read, (ii) Reheap so pricedList orders by the possibly
+		// changed effective tip, (iii) collect addresses that hold queued
+		// txs and request a queue->pending re-promotion AFTER unlock.
+		pool.all.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+			tx.ClearAnzeonTipCap()
+			return true
+		}, true, true)
+		pool.priced.Reheap()
+		promoteSet = newAccountSet(pool.signer)
+		for addr := range pool.queue {
+			promoteSet.add(addr)
+		}
 	}
 	log.Info("Legacy pool tip threshold updated", "tip", newTip)
+
+	pool.mu.Unlock()
+
+	// requestPromoteExecutables sends on pool.reqPromoteCh, which is
+	// consumed by scheduleReorgLoop -> runReorg, which itself takes
+	// pool.mu. Calling it with pool.mu still held would deadlock. This
+	// mirrors the pattern in addRemotes (line 1113-1126).
+	if promoteSet != nil && len(promoteSet.accounts) > 0 {
+		pool.requestPromoteExecutables(promoteSet)
+	}
 }
 
 // Nonce returns the next nonce of an account, with all transactions executable
