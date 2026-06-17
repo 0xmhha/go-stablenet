@@ -47,11 +47,20 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 
 // SetCurrentBlock updates the current block header and signer.
 // This should be called when the blockchain head changes.
+//
+// The block is refreshed when either the state root or the governance-controlled
+// GasTip changes. Checking only the state root is not sufficient: an empty block
+// keeps the parent's state root, yet its header may carry a GasTip that was just
+// changed by governance. Without the GasTip check the cached currentBlock would
+// keep a stale GasTip, and unauthorized-account tip calculations (which use the
+// header GasTip) would never observe the new value.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
+	if env.currentBlock == nil ||
+		env.currentBlock.Root != header.Root ||
+		gasTipChanged(env.currentBlock.GasTip(), header.GasTip()) {
 		env.currentBlock = header
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
@@ -60,6 +69,20 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 		}
 		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+}
+
+// gasTipChanged reports whether the governance GasTip differs between two block
+// headers. Two nil values are treated as equal; exactly one nil is treated as a
+// change; otherwise the integer values are compared, so equal values stored in
+// distinct *big.Int pointers are not considered a change.
+func gasTipChanged(a, b *big.Int) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	return a.Cmp(b) != 0
 }
 
 // SetBaseFee updates the base fee for gas price calculations.

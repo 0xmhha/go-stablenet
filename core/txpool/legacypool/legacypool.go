@@ -2055,10 +2055,22 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
 }
 
 // RemotesBelowTip finds all remote transactions below the given tip threshold.
+//
+// The comparison uses the transaction's cached AnzeonTipCap, which is the
+// effective tip applied at execution time (for unauthorized accounts this is the
+// block header GasTip, not the transaction's own GasTipCap). A transaction whose
+// effective tip falls below a raised threshold must be dropped even if its own
+// GasTipCap would satisfy the threshold; otherwise such transactions stagnate in
+// the pool after a governance GasTip change. When no AnzeonTipCap has been cached
+// the comparison falls back to the transaction's GasTipCap.
 func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 	found := make(types.Transactions, 0, 128)
 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
-		if tx.GasTipCapIntCmp(threshold) < 0 {
+		tip := tx.GetAnzeonTipCap()
+		if tip == nil {
+			tip = tx.GasTipCap()
+		}
+		if tip.Cmp(threshold) < 0 {
 			found = append(found, tx)
 		}
 		return true
