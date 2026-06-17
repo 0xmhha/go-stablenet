@@ -417,10 +417,27 @@ func (tx *Transaction) SetAnzeonTipCap(tipCap *big.Int) {
 	}
 }
 
-// GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached.
+// ClearAnzeonTipCap invalidates the cached Anzeon tip cap. It uses a
+// typed-nil store because atomic.Value.Store(nil) panics; the typed nil
+// preserves the dynamic-type invariant of atomic.Value while marking
+// the cache as "unset" to subsequent GetAnzeonTipCap callers.
+//
+// This is the cache invalidator that LegacyPool.SetGasTip (lowering
+// branch) and BlobPool.SetGasTip (lowering branch) call to make
+// EffectiveGasTip recompute against the updated env after a floor lower.
+func (tx *Transaction) ClearAnzeonTipCap() {
+	tx.anzeonTipCap.Store((*big.Int)(nil))
+}
+
+// GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached
+// (or cleared). A typed-nil store from ClearAnzeonTipCap is treated as
+// "not cached" for back-compat with callers that did the simple
+// `if cached := ...Load(); cached != nil { ... }` pattern.
 func (tx *Transaction) GetAnzeonTipCap() *big.Int {
 	if cached := tx.anzeonTipCap.Load(); cached != nil {
-		return cached.(*big.Int)
+		if bi, ok := cached.(*big.Int); ok && bi != nil {
+			return bi
+		}
 	}
 	return nil
 }
