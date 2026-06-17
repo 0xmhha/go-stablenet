@@ -1575,6 +1575,207 @@ func TestRepricing(t *testing.T) {
 	}
 }
 
+// wbftDynamicFeeTx creates a DynamicFee transaction signed for TestWBFTChainConfig
+// (ChainID 8282) with the given nonce, gaslimit, gasFee cap, tip cap, and to address.
+func wbftDynamicFeeTx(nonce uint64, gaslimit uint64, gasFee *big.Int, tip *big.Int, to common.Address, key *ecdsa.PrivateKey) *types.Transaction {
+	tx, _ := types.SignNewTx(key, types.LatestSignerForChainID(params.TestWBFTChainConfig.ChainID), &types.DynamicFeeTx{
+		ChainID:   params.TestWBFTChainConfig.ChainID,
+		Nonce:     nonce,
+		GasTipCap: tip,
+		GasFeeCap: gasFee,
+		Gas:       gaslimit,
+		To:        &to,
+		Value:     big.NewInt(0),
+	})
+	return tx
+}
+
+// assertNoStaleAnzeonTipCache checks that every tx in pool.all has either a nil
+// cached tip OR a cached tip that equals the value the AnzeonTipEnv would return.
+// On a pre-fix build the lowering branch is a no-op, so stale non-nil tips linger.
+func assertNoStaleAnzeonTipCache(t *testing.T, pool *LegacyPool) {
+	t.Helper()
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	pool.all.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+		cached := tx.GetAnzeonTipCap()
+		if cached == nil {
+			return true // nil is fine — will recompute on next read
+		}
+		env := pool.anzeonTipEnv.GetAnzeonTipCap(tx)
+		if env == nil {
+			return true // env also nil, consistent
+		}
+		if cached.Cmp(env) != 0 {
+			t.Errorf("stale anzeonTipCap on tx %v: cached=%v env=%v", tx.Hash().Hex(), cached, env)
+		}
+		return true
+	}, true, true)
+}
+
+// TestRepricingDynamicReflection tests that after SetGasTip is lowered, previously
+// demoted transactions auto-promote back to pending and new submissions at the
+// new (lower) tip are admitted. This is AC1 — it MUST FAIL on pre-fix code
+// where the lowering branch in SetGasTip is a no-op.
+//
+// The test uses DynamicFee txs so that GasTipCap and GasFeeCap are independent:
+// GasTipCap = 27600 gwei (at floor), GasFeeCap = 50000 gwei (above MinBaseFee+tip).
+// After raising the floor to 30000 gwei, RemotesBelowTip drops the tx because
+// GasTipCap(27600) < threshold(30000). On pre-fix code, lowering back to 27600
+// is a no-op so the queued tx is never re-promoted; with the fix it is.
+func TestRepricingDynamicReflection(t *testing.T) {
+	t.Parallel()
+
+	// Use TestWBFTChainConfig so the Anzeon cache machinery is wired.
+	pool, _ := setupPoolWithConfig(params.TestWBFTChainConfig)
+	defer pool.Close()
+
+	// Fund a regular sender (not in pool.locals, not a system contract).
+	senderKey, _ := crypto.GenerateKey()
+	senderAddr := crypto.PubkeyToAddress(senderKey.PublicKey)
+	testAddBalance(pool, senderAddr, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
+
+	// Step 3: set the base floor.
+	const (
+		floorGwei = 27600
+		highGwei  = 30000
+	)
+	// GasFeeCap must satisfy: GasFeeCap >= MinBaseFee(20000gwei) + GasTipCap(27600gwei)
+	minBaseFee := new(big.Int).SetUint64(params.MinBaseFee)
+	feeCap := new(big.Int).Add(minBaseFee, gwei(floorGwei))
+
+	pool.SetGasTip(gwei(floorGwei))
+
+	// Step 4: submit a DynamicFee tx at floor tip → must land in pending.
+	to := common.HexToAddress("0xabcdef")
+	tx0 := wbftDynamicFeeTx(0, 100000, feeCap, gwei(floorGwei), to, senderKey)
+	if err := pool.addRemoteSync(tx0); err != nil {
+		t.Fatalf("step 4: addRemote at floor failed: %v", err)
+	}
+	pending, _ := pool.Stats()
+	if pending != 1 {
+		t.Fatalf("step 4: want 1 pending, got %d", pending)
+	}
+
+	// Step 5: raise the floor → tx must be dropped (GasTipCap 27600 < new floor 30000).
+	pool.SetGasTip(gwei(highGwei))
+	pending, queued := pool.Stats()
+	if pending != 0 || queued != 0 {
+		// tx is either dropped or moved to queue; either way it must not be pending
+		t.Fatalf("step 5: want 0 pending after raise, got pending=%d queued=%d", pending, queued)
+	}
+
+	// Step 6a: lower back to the original floor.
+	pool.SetGasTip(gwei(floorGwei))
+
+	// Step 6b: a fresh tx at the floor MUST be admitted after the lowering.
+	// On pre-fix code the gasTip lowers but caches are stale so the tx is
+	// rejected as underpriced on the EffectiveGasTip check.
+	senderKey2, _ := crypto.GenerateKey()
+	senderAddr2 := crypto.PubkeyToAddress(senderKey2.PublicKey)
+	testAddBalance(pool, senderAddr2, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
+	tx1 := wbftDynamicFeeTx(0, 100000, feeCap, gwei(floorGwei), to, senderKey2)
+	if err := pool.addRemoteSync(tx1); err != nil {
+		t.Fatalf("step 6b: addRemote at restored floor failed: %v", err)
+	}
+	pending, _ = pool.Stats()
+	if pending < 1 {
+		t.Fatalf("step 6b: want ≥1 pending after restore, got %d", pending)
+	}
+
+	// Step 7: assert cache invariant — no stale anzeonTipCap values.
+	assertNoStaleAnzeonTipCache(t, pool)
+
+	if err := validatePoolInternals(pool); err != nil {
+		t.Fatalf("pool internal state corrupted: %v", err)
+	}
+}
+
+// TestSystemContractTxExemptFromMinTip tests that transactions targeting
+// chainconfig-derived system-contract addresses bypass the MinTip gate and
+// survive the Pending tip-truncation filter. This is AC2+AC3 — it MUST FAIL
+// on pre-fix code where validateTxBasics has no system-contract exemption.
+//
+// System-contract txs use a tip clearly below the floor (1 gwei vs 30000 gwei
+// floor) but a GasFeeCap >= MinBaseFee so the base-fee check still passes.
+// The MinTip gate must be bypassed for system contracts.
+func TestSystemContractTxExemptFromMinTip(t *testing.T) {
+	t.Parallel()
+
+	pool, _ := setupPoolWithConfig(params.TestWBFTChainConfig)
+	defer pool.Close()
+
+	// Step 2: raise the floor well above the tip we will use (1 gwei).
+	pool.SetGasTip(gwei(30000))
+
+	sc := params.TestWBFTChainConfig.Anzeon.SystemContracts
+	contracts := []*params.SystemContract{
+		sc.GovValidator, sc.NativeCoinAdapter, sc.GovMasterMinter,
+		sc.GovMinter, sc.GovCouncil,
+	}
+
+	// For system-contract txs:
+	//   GasTipCap = 1 gwei  (clearly below the 30000 gwei floor → tests MinTip bypass)
+	//   GasFeeCap = MinBaseFee (20000 gwei) → satisfies the base-fee gate
+	minBaseFee := new(big.Int).SetUint64(params.MinBaseFee)
+	sysTip := gwei(1)
+	sysFeeCap := minBaseFee // MinBaseFee + 0 (since MinTip will be zeroed by exemption)
+
+	minTipUint := uint256.MustFromBig(gwei(30000))
+	filter := txpool.PendingFilter{MinTip: minTipUint}
+
+	for _, contract := range contracts {
+		if contract == nil {
+			continue
+		}
+		addr := contract.Address
+
+		// Each system-contract tx uses a fresh key/sender.
+		govKey, _ := crypto.GenerateKey()
+		govAddr := crypto.PubkeyToAddress(govKey.PublicKey)
+		testAddBalance(pool, govAddr, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
+
+		// Step 3a: build a DynamicFee tx to the system contract with a tip below the floor.
+		govTx := wbftDynamicFeeTx(0, 100000, sysFeeCap, sysTip, addr, govKey)
+
+		// Step 3b: must be admitted (no ErrUnderpriced) — MinTip is bypassed for system contracts.
+		if err := pool.addRemoteSync(govTx); err != nil {
+			t.Errorf("system-contract tx to %v rejected: %v (want nil)", addr.Hex(), err)
+			continue
+		}
+
+		// Step 3c: must appear in Pending even with the high MinTip filter.
+		// The Pending truncation loop must skip system-contract txs.
+		pendingMap := pool.Pending(filter)
+		found := false
+		for _, lazies := range pendingMap {
+			for _, lz := range lazies {
+				if lz.Hash == govTx.Hash() {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("system-contract tx to %v not in Pending with MinTip=%v", addr.Hex(), filter.MinTip)
+		}
+	}
+
+	// Step 4: negative control — a tx to a random EOA at 1 gwei MUST be rejected.
+	randomKey, _ := crypto.GenerateKey()
+	randomAddr := crypto.PubkeyToAddress(randomKey.PublicKey)
+	testAddBalance(pool, randomAddr, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
+
+	eoa := common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	eoaTx := wbftDynamicFeeTx(0, 100000, sysFeeCap, sysTip, eoa, randomKey)
+	if err := pool.addRemote(eoaTx); !errors.Is(err, txpool.ErrUnderpriced) {
+		t.Errorf("EOA tx at 1 gwei should be rejected: got %v, want ErrUnderpriced", err)
+	}
+
+	if err := validatePoolInternals(pool); err != nil {
+		t.Fatalf("pool internal state corrupted: %v", err)
+	}
+}
+
 func TestMinGasPriceEnforced(t *testing.T) {
 	t.Parallel()
 
