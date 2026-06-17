@@ -593,6 +593,9 @@ func (pool *LegacyPool) Pending(filter txpool.PendingFilter) map[common.Address]
 		// If the miner requests tip enforcement, cap the lists now
 		if minTipBig != nil && !pool.locals.contains(addr) {
 			for i, tx := range txs {
+				if pool.isSystemContractTx(tx) {
+					continue // system-contract tx is exempt from sealing-time truncation
+				}
 				if tx.EffectiveGasTipIntCmp(minTipBig, pool.anzeonTipEnv) < 0 {
 					txs = txs[:i]
 					break
@@ -662,10 +665,56 @@ func (pool *LegacyPool) validateTxBasics(tx *types.Transaction, local bool) erro
 	if local {
 		opts.MinTip = new(big.Int)
 	}
+	// System-contract-bound txs (governance proposals targeting GovValidator,
+	// GovCouncil, GovMinter, GovMasterMinter, NativeCoinAdapter) are exempt
+	// from the MinTip gate. This mirrors the `local` exemption and breaks
+	// the circular deadlock where a gas-tip restoration proposal cannot
+	// enter the pool because its target tip is below the current floor.
+	if pool.isSystemContractTx(tx) {
+		opts.MinTip = new(big.Int)
+	}
 	if err := txpool.ValidateTransaction(tx, pool.currentHead.Load(), pool.signer, opts); err != nil {
 		return err
 	}
 	return nil
+}
+
+// systemContractAddresses returns the chainconfig-derived set of
+// addresses that are exempt from the MinTip entry/Pending gate. The
+// whitelist comes only from chainconfig.Anzeon.SystemContracts — no
+// hardcoded addresses (AC3). Returns an empty set when any chainconfig
+// level is nil, preserving pre-fix behaviour for fixtures without
+// Anzeon (e.g. params.TestChainConfig).
+func (pool *LegacyPool) systemContractAddresses() map[common.Address]struct{} {
+	set := map[common.Address]struct{}{}
+	if pool.chainconfig == nil || pool.chainconfig.Anzeon == nil {
+		return set
+	}
+	sc := pool.chainconfig.Anzeon.SystemContracts
+	if sc == nil {
+		return set
+	}
+	for _, c := range []*params.SystemContract{
+		sc.GovValidator, sc.GovCouncil, sc.GovMinter,
+		sc.GovMasterMinter, sc.NativeCoinAdapter,
+	} {
+		if c != nil {
+			set[c.Address] = struct{}{}
+		}
+	}
+	return set
+}
+
+// isSystemContractTx reports whether tx targets a chainconfig-derived
+// system contract. Contract-creation transactions (To == nil) are never
+// system contract txs.
+func (pool *LegacyPool) isSystemContractTx(tx *types.Transaction) bool {
+	if tx == nil || tx.To() == nil {
+		return false
+	}
+	set := pool.systemContractAddresses()
+	_, ok := set[*tx.To()]
+	return ok
 }
 
 // validateTx checks whether a transaction is valid according to the consensus
