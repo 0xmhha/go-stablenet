@@ -1630,57 +1630,70 @@ func TestRepricingDynamicReflection(t *testing.T) {
 	pool, _ := setupPoolWithConfig(params.TestWBFTChainConfig)
 	defer pool.Close()
 
-	// Fund a regular sender (not in pool.locals, not a system contract).
-	senderKey, _ := crypto.GenerateKey()
-	senderAddr := crypto.PubkeyToAddress(senderKey.PublicKey)
-	testAddBalance(pool, senderAddr, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
+	bigFund := new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether))
 
 	// Step 3: set the base floor.
 	const (
-		floorGwei = 27600
-		highGwei  = 30000
+		floorGwei    = 27600
+		highGwei     = 30000
+		survivorGwei = 40000 // above both floor and high → never dropped
 	)
-	// GasFeeCap must satisfy: GasFeeCap >= MinBaseFee(20000gwei) + GasTipCap(27600gwei)
+	// GasFeeCap must satisfy: GasFeeCap >= MinBaseFee + GasTipCap.
 	minBaseFee := new(big.Int).SetUint64(params.MinBaseFee)
-	feeCap := new(big.Int).Add(minBaseFee, gwei(floorGwei))
-
-	pool.SetGasTip(gwei(floorGwei))
-
-	// Step 4: submit a DynamicFee tx at floor tip → must land in pending.
+	feeCapFloor := new(big.Int).Add(minBaseFee, gwei(floorGwei))
+	feeCapSurv := new(big.Int).Add(minBaseFee, gwei(survivorGwei))
 	to := common.HexToAddress("0xabcdef")
-	tx0 := wbftDynamicFeeTx(0, 100000, feeCap, gwei(floorGwei), to, senderKey)
-	if err := pool.addRemoteSync(tx0); err != nil {
-		t.Fatalf("step 4: addRemote at floor failed: %v", err)
-	}
-	pending, _ := pool.Stats()
-	if pending != 1 {
-		t.Fatalf("step 4: want 1 pending, got %d", pending)
-	}
 
-	// Step 5: raise the floor → tx must be dropped (GasTipCap 27600 < new floor 30000).
-	pool.SetGasTip(gwei(highGwei))
-	pending, queued := pool.Stats()
-	if pending != 0 || queued != 0 {
-		// tx is either dropped or moved to queue; either way it must not be pending
-		t.Fatalf("step 5: want 0 pending after raise, got pending=%d queued=%d", pending, queued)
-	}
-
-	// Step 6a: lower back to the original floor.
 	pool.SetGasTip(gwei(floorGwei))
+
+	// Step 4a: an at-floor tx that will be dropped when the floor is raised.
+	key0, _ := crypto.GenerateKey()
+	testAddBalance(pool, crypto.PubkeyToAddress(key0.PublicKey), bigFund)
+	tx0 := wbftDynamicFeeTx(0, 100000, feeCapFloor, gwei(floorGwei), to, key0)
+	if err := pool.addRemoteSync(tx0); err != nil {
+		t.Fatalf("step 4a: addRemote at floor failed: %v", err)
+	}
+
+	// Step 4b: a high-tip "survivor" tx that stays pending across raise+lower.
+	// Its anzeonTipCap is cached during validation; lowering MUST invalidate it.
+	keyS, _ := crypto.GenerateKey()
+	testAddBalance(pool, crypto.PubkeyToAddress(keyS.PublicKey), bigFund)
+	txS := wbftDynamicFeeTx(0, 100000, feeCapSurv, gwei(survivorGwei), to, keyS)
+	if err := pool.addRemoteSync(txS); err != nil {
+		t.Fatalf("step 4b: addRemote survivor failed: %v", err)
+	}
+	if pending, _ := pool.Stats(); pending != 2 {
+		t.Fatalf("step 4: want 2 pending, got %d", pending)
+	}
+	// Precondition for the Layer 2 assertion: validation cached the tip cap.
+	if txS.GetAnzeonTipCap() == nil {
+		t.Fatalf("step 4b: survivor anzeonTipCap must be cached after add")
+	}
+
+	// Step 5: raise the floor → tx0 dropped (27600 < 30000), survivor (40000) stays.
+	pool.SetGasTip(gwei(highGwei))
+	if pending, queued := pool.Stats(); pending != 1 || queued != 0 {
+		t.Fatalf("step 5: want 1 pending (survivor) after raise, got pending=%d queued=%d", pending, queued)
+	}
+
+	// Step 6a: lower back to the original floor. This MUST clear the survivor's
+	// stale anzeonTipCap cache (Layer 2). On pre-fix code the lowering branch is
+	// a no-op, so the cache stays populated and this assertion fails — giving the
+	// test its regression power.
+	pool.SetGasTip(gwei(floorGwei))
+	if cached := txS.GetAnzeonTipCap(); cached != nil {
+		t.Fatalf("step 6a: lowering must invalidate anzeonTipCap, still cached=%v", cached)
+	}
 
 	// Step 6b: a fresh tx at the floor MUST be admitted after the lowering.
-	// On pre-fix code the gasTip lowers but caches are stale so the tx is
-	// rejected as underpriced on the EffectiveGasTip check.
-	senderKey2, _ := crypto.GenerateKey()
-	senderAddr2 := crypto.PubkeyToAddress(senderKey2.PublicKey)
-	testAddBalance(pool, senderAddr2, new(big.Int).Mul(big.NewInt(1e9), big.NewInt(params.Ether)))
-	tx1 := wbftDynamicFeeTx(0, 100000, feeCap, gwei(floorGwei), to, senderKey2)
+	key1, _ := crypto.GenerateKey()
+	testAddBalance(pool, crypto.PubkeyToAddress(key1.PublicKey), bigFund)
+	tx1 := wbftDynamicFeeTx(0, 100000, feeCapFloor, gwei(floorGwei), to, key1)
 	if err := pool.addRemoteSync(tx1); err != nil {
 		t.Fatalf("step 6b: addRemote at restored floor failed: %v", err)
 	}
-	pending, _ = pool.Stats()
-	if pending < 1 {
-		t.Fatalf("step 6b: want ≥1 pending after restore, got %d", pending)
+	if pending, _ := pool.Stats(); pending < 2 {
+		t.Fatalf("step 6b: want ≥2 pending after restore, got %d", pending)
 	}
 
 	// Step 7: assert cache invariant — no stale anzeonTipCap values.
