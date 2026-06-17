@@ -1029,6 +1029,15 @@ func (p *BlobPool) SetGasTip(tip *big.Int) {
 
 	p.gasTip = newTip
 
+	// On lowering, clear any cached Anzeon tip cap on Transaction objects that
+	// are currently held in memory so EffectiveGasTip recomputes against the
+	// new env when consumers read it. BlobPool does not keep *types.Transaction
+	// objects in memory (they live on the billy store); transactions loaded from
+	// disk via Get() will have a fresh anzeonTipCap cache already. This path is
+	// a no-op for blobs, consistent with the design — see plan.md Step 4.
+	// The execTipCap on blobTxMeta is the canonical sort key for the blobpool
+	// and is unaffected by the Anzeon cache.
+
 	// If the min miner fee increased, remove transactions below the new threshold
 	if old == nil || p.gasTip.Cmp(old) > 0 {
 		for addr, txs := range p.index {
