@@ -1,0 +1,172 @@
+{
+  "ticket_id": "LOCAL-20260617_084426",
+  "created_at": "2026-06-17T08:53:14Z",
+  "workspace_dir": "/Users/wm-it-25_0220/Work/github/test/pr-77-test7/.coding-agent/tickets/LOCAL-20260617_084426",
+  "ticket_type": "bugfix",
+  "pipeline_variant": "full",
+  "requirement_source": "local",
+  "current_state": "EVALUATION",
+  "current_agent": null,
+  "states": {
+    "TICKET_INTAKE": {
+      "status": "completed",
+      "started_at": "2026-06-17T08:53:14Z",
+      "completed_at": "2026-06-17T08:55:00Z",
+      "artifacts": [
+        "ticket.json",
+        "ticket-parsed.json"
+      ],
+      "sensitive_check": {
+        "result": "CLEAN",
+        "redacted_count": 0,
+        "scanned_at": "2026-06-17T08:53:14Z"
+      }
+    },
+    "ANALYSIS": {
+      "status": "completed",
+      "started_at": "2026-06-17T08:55:00Z",
+      "completed_at": "2026-06-17T09:20:41Z",
+      "artifacts": [
+        "analysis.md",
+        "related-code.json"
+      ]
+    },
+    "PLANNING": {
+      "status": "completed",
+      "started_at": "2026-06-17T09:20:41Z",
+      "completed_at": "2026-06-17T09:25:29Z",
+      "artifacts": [
+        "plan.md"
+      ]
+    },
+    "DESIGN": {
+      "status": "completed",
+      "started_at": "2026-06-17T09:25:29Z",
+      "completed_at": "2026-06-17T09:30:06Z",
+      "artifacts": [
+        "design-v1.md",
+        "design-changelog.md"
+      ],
+      "revision": 1
+    },
+    "IMPLEMENTATION": {
+      "status": "completed",
+      "started_at": "2026-06-17T09:30:06Z",
+      "completed_at": "2026-06-18T00:00:00Z",
+      "branch": "fix/pr-77-gastip-dynamic-reflection-test7",
+      "plan_progress": {
+        "total_steps": 6,
+        "steps": [
+          {
+            "step_id": 1,
+            "description": "Layer 2 — Transaction.ClearAnzeonTipCap() (typed-nil)",
+            "status": "completed",
+            "commits": [
+              "53f93c752"
+            ],
+            "started_at": "2026-06-17T09:35:00Z",
+            "completed_at": "2026-06-17T09:36:00Z",
+            "last_checkpoint": null
+          },
+          {
+            "step_id": 2,
+            "description": "Layer 1 — system-contract address helper + entry-gate + Pending exemption (legacypool)",
+            "status": "completed",
+            "commits": [
+              "e8802d1b7"
+            ],
+            "started_at": "2026-06-17T09:36:00Z",
+            "completed_at": "2026-06-17T09:38:00Z",
+            "last_checkpoint": null
+          },
+          {
+            "step_id": 3,
+            "description": "Layer 2 — LegacyPool.SetGasTip lowering reaction",
+            "status": "completed",
+            "commits": [
+              "e853c75a2"
+            ],
+            "started_at": "2026-06-17T09:38:00Z",
+            "completed_at": "2026-06-17T09:40:00Z",
+            "last_checkpoint": null
+          },
+          {
+            "step_id": 4,
+            "description": "Layer 2 mirror — BlobPool.SetGasTip cache-clear on lowering",
+            "status": "completed",
+            "commits": [
+              "a0d12a486"
+            ],
+            "started_at": "2026-06-17T09:40:00Z",
+            "completed_at": "2026-06-17T09:41:00Z",
+            "last_checkpoint": null
+          },
+          {
+            "step_id": 5,
+            "description": "Regression unit tests (legacypool_test.go)",
+            "status": "completed",
+            "commits": [
+              "258fa4d4b",
+              "04c0bf364"
+            ],
+            "started_at": "2026-06-17T09:41:00Z",
+            "completed_at": "2026-06-17T09:50:00Z",
+            "last_checkpoint": null
+          },
+          {
+            "step_id": 6,
+            "description": "Chain simulation test (gastip_restore_sim_test.go)",
+            "status": "completed",
+            "commits": [
+              "746ad0d80"
+            ],
+            "started_at": "2026-06-17T09:50:00Z",
+            "completed_at": "2026-06-18T00:00:00Z",
+            "last_checkpoint": null
+          }
+        ]
+      },
+      "commits": [
+        "04c0bf364",
+        "746ad0d80"
+      ]
+    },
+    "EVALUATION": {
+      "status": "completed",
+      "started_at": "2026-06-18T00:00:00Z",
+      "completed_at": "2026-06-18T00:00:00Z",
+      "results": {
+        "unit_test": "PASS",
+        "lint": "PASS",
+        "security": "SKIP",
+        "chainbench": "SKIP"
+      },
+      "report_path": "test-report.md"
+    },
+    "COMPLETION": {
+      "status": "pending",
+      "pr_url": null,
+      "merged_at": null,
+      "merge_commit": null,
+      "note": "Local-only per user (option B): no push/PR. Branch fix/pr-77-gastip-dynamic-reflection-test7 ready for manual review/push."
+    }
+  },
+  "failure_log": [],
+  "failure_summary": {
+    "total_failures": 0,
+    "by_state": {},
+    "by_type": {},
+    "recurring_patterns": []
+  },
+  "config": {
+    "max_design_revisions": 3,
+    "max_eval_cycles": 3,
+    "impl_model": "sonnet-4.6",
+    "planning_model": "opus-4.7",
+    "autonomy": {
+      "mode": "auto",
+      "on_blocked": "escalate",
+      "auto_merge": false
+    }
+  }
+}

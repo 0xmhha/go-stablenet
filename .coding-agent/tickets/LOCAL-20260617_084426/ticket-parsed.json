@@ -1,0 +1,38 @@
+{
+  "work_type": "bugfix",
+  "summary": "거버넌스 GasTip 복원 제안 시 트랜잭션 Pending Pool 정체 (Layer 1+2)",
+  "pipeline_variant": "full",
+  "fields": {
+    "summary": "거버넌스(GovValidator)로 gasTip을 올린 뒤 복원(낮춤)하는 제안 트랜잭션이 pending pool에 정체되어 블록에 포함되지 않음. Layer 1(governance 면제)+2(SetGasTip 동적 반영)로 수정.",
+    "steps_to_reproduce": [
+      "초기 상태: gasTip = 27600 Gwei",
+      "거버넌스 제안 → 30000 Gwei로 변경 (정상 반영)",
+      "이후 27600 Gwei로 복원하기 위한 거버넌스 제안 트랜잭션 제출"
+    ],
+    "expected": "gasTip 복원(낮춤) 제안 tx가 정상적으로 풀에 진입하고 블록에 포함된다. gasTip 변경 이후 변경된 조건에 부합하지 않는 tx는 pending pool에 남아있지 않는다.",
+    "actual": "복원 제안 tx가 pending pool에 지속적으로 남아 블록에 포함되지 않고 상태 변화 없음. 반복 재현 가능.",
+    "scope": {
+      "modules": [
+        "core/txpool/validation.go",
+        "core/txpool/legacypool/legacypool.go",
+        "core/txpool/blobpool/blobpool.go",
+        "core/types/transaction.go"
+      ],
+      "severity": "high"
+    },
+    "acceptance_criteria": [
+      { "text": "gasTip 변경 후 변경된 조건에 부합하지 않는 tx가 pending pool에 남아있지 않는다", "checked": false },
+      { "text": "거버넌스/시스템 컨트랙트 대상 복원(낮춤) 제안 tx가 현재 높은 floor와 무관하게 풀에 진입하여 블록에 포함된다", "checked": false },
+      { "text": "면제는 chainconfig에서 파생된 시스템 컨트랙트 주소로 엄격히 제한(하드코드 금지, byzantine-fairness 불변식 유지)", "checked": false },
+      { "text": "수정 전 코드에서 반드시 실패하는 회귀 유닛테스트 추가 (legacypool_test.go)", "checked": false },
+      { "text": "multiengine_test.go 패턴의 체인 시뮬레이션 테스트로 27600→30000→27600 검증", "checked": false },
+      { "text": "go test -race 통과", "checked": false },
+      { "text": "작업 브랜치명에 'test7' 포함, 현재 HEAD 기준 생성", "checked": false }
+    ]
+  },
+  "missing_fields": [],
+  "warnings": [
+    "근본원인 분석은 .coding-agent/diagnoses/DIAG-20260617_074336/diagnosis.md 에 완료되어 있어 planner의 ANALYSIS는 해당 문서를 ground truth로 재사용해야 한다(재분석 최소화).",
+    "Layer 3 (eth/gasprice/anzeon.go same-Root skip)은 이번 스코프에서 제외됨."
+  ]
+}

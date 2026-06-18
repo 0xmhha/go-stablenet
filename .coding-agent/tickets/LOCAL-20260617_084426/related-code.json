@@ -1,0 +1,206 @@
+{
+  "indexed_head": "0bf2f4d1bfeb6605006d556957ef8c045d8f8ed8",
+  "current_head": "0bf2f4d1bfeb6605006d556957ef8c045d8f8ed8",
+  "fresh": true,
+  "results": [
+    {
+      "kind": "modify",
+      "layer": 1,
+      "file": "core/txpool/legacypool/legacypool.go",
+      "symbol": "LegacyPool.validateTxBasics",
+      "start_line": 650,
+      "end_line": 669,
+      "role": "MinTip entry gate; carries `local` zero-tip exemption pattern that the system-contract exemption will mirror.",
+      "change_summary": "Mirror the `local` exemption: when tx is bound to a chainconfig-derived system contract (GovValidator / GovCouncil / GovMinter / GovMasterMinter / NativeCoinAdapter), force opts.MinTip = new(big.Int). Nil-guard pool.chainconfig.Anzeon / .SystemContracts / each contract field."
+    },
+    {
+      "kind": "modify",
+      "layer": 1,
+      "file": "core/txpool/legacypool/legacypool.go",
+      "symbol": "LegacyPool.Pending",
+      "start_line": 569,
+      "end_line": 620,
+      "role": "Pending tip filter mirrors the entry gate; without the same exemption a system-contract tx admitted at Add could still be dropped at sealing time.",
+      "change_summary": "When truncating txs by `EffectiveGasTipIntCmp(minTipBig, env) < 0`, skip txs whose `tx.To()` is in the system-contract address set (in addition to the existing locals skip)."
+    },
+    {
+      "kind": "read",
+      "layer": 1,
+      "file": "core/txpool/validation.go",
+      "symbol": "ValidateTransaction",
+      "start_line": 55,
+      "end_line": 174,
+      "role": "Static MinTip gate (line 119-120) and Anzeon MinBaseFee+MinTip gate (line 122-131). Signature is preserved; exemption is signalled by caller-supplied opts.MinTip = 0.",
+      "change_summary": "(no in-file change) — to keep cherry-pick safety (RI-09). Driver of exemption is validateTxBasics."
+    },
+    {
+      "kind": "modify",
+      "layer": 2,
+      "file": "core/types/transaction.go",
+      "symbol": "Transaction.ClearAnzeonTipCap",
+      "start_line": 412,
+      "end_line": 426,
+      "role": "Add a clear/invalidator for the previously invalidator-less per-tx anzeonTipCap cache.",
+      "change_summary": "Add `func (tx *Transaction) ClearAnzeonTipCap()` that does `tx.anzeonTipCap.Store((*big.Int)(nil))` (typed nil so atomic.Value is consistent). Update `GetAnzeonTipCap` to treat typed-nil store as 'unset' for back-compat."
+    },
+    {
+      "kind": "modify",
+      "layer": 2,
+      "file": "core/txpool/legacypool/legacypool.go",
+      "symbol": "LegacyPool.SetGasTip",
+      "start_line": 472,
+      "end_line": 496,
+      "role": "Currently single-direction: drops on raise, no-ops on lower. Layer 2 makes it react on lowering.",
+      "change_summary": "On lowering (`newTip < old`): (i) iterate `pool.all.Range` and call `tx.ClearAnzeonTipCap()` on every tx, (ii) `pool.priced.Reheap()` to re-sort by potentially-changed effective tip, (iii) collect `accountSet` of addresses that hold queued txs and after releasing `pool.mu` invoke `pool.requestPromoteExecutables(accountSet)` (mirroring the `Add` enqueue pattern at line 1126), so that conformant queued txs are re-promoted to pending. Keep existing raise-drop unchanged."
+    },
+    {
+      "kind": "modify",
+      "layer": 2,
+      "file": "core/txpool/blobpool/blobpool.go",
+      "symbol": "BlobPool.SetGasTip",
+      "start_line": 1018,
+      "end_line": 1085,
+      "role": "Mirror of legacypool's SetGasTip asymmetry; same Layer 2 fix.",
+      "change_summary": "On lowering, walk `p.lookup` (or `p.index`) and call `tx.ClearAnzeonTipCap()` on each Transaction. Blobpool's promotion is lazy (next Pending pass) so no explicit promote-request is needed. Keep existing raise-drop."
+    },
+    {
+      "kind": "modify_test",
+      "layer": "test",
+      "file": "core/txpool/legacypool/legacypool_test.go",
+      "symbol": "TestRepricingDynamicReflection",
+      "start_line": null,
+      "end_line": null,
+      "role": "Regression unit test (new) — 27600->30000->27600 raise+restore scenario; must fail on pre-fix code (tx stuck in pending pool).",
+      "change_summary": "(new test) After `SetGasTip(high)`, a pre-existing low-tip tx is dropped from pending (existing behavior); after `SetGasTip(restored_low)`, a new low-tip tx (regular sender) must be accepted AND a queued low-tip tx (under cap before restore) must auto-promote to pending. AC1 coverage."
+    },
+    {
+      "kind": "new_test",
+      "layer": "test",
+      "file": "core/txpool/legacypool/legacypool_test.go",
+      "symbol": "TestSystemContractTxExemptFromMinTip",
+      "start_line": null,
+      "end_line": null,
+      "role": "Regression unit test (new) — system-contract-bound tx admitted regardless of high floor; must fail on pre-fix code.",
+      "change_summary": "Build a pool with Anzeon-configured ChainConfig (TestWBFTChainConfig). Raise `SetGasTip` to 30000 gwei. Submit a tx with `to = GovValidator.Address` and `gasTipCap = 1 gwei` — must be admitted to pending and NOT return ErrUnderpriced. Verify the same for each of the 5 system contracts. Also verify the Pending tip filter does NOT truncate it out at sealing time. AC2/AC3 coverage."
+    },
+    {
+      "kind": "new_test",
+      "layer": "test",
+      "file": "core/txpool/legacypool/gastip_restore_sim_test.go",
+      "symbol": "TestGasTipRestoreChainSim",
+      "start_line": null,
+      "end_line": null,
+      "role": "Chain-level simulation test following the multiengine_test.go pattern (testutils.Genesis + core.NewBlockChain + miner worker). Drives gasTip 27600->30000->27600 via direct pool.SetGasTip (no need to drive GovValidator on-chain) and submits a system-contract-bound restore tx — verifies it is mined into the next block, not stuck in pending. AC5 coverage.",
+      "change_summary": "New file. Uses `consensus/wbft/testutils.GenesisAndFixedKeys` to construct genesis with SystemContracts in place. Builds a `core.BlockChain` and a `LegacyPool` directly (worker-less harness — multiengine pattern). Drives the lifecycle 27600 -> 30000 -> 27600. Asserts the system-contract restore tx ends up in the next sealed block (`pool.Pending(...)` returns it before sealing, NOT truncated). Runs under `go test -race`."
+    },
+    {
+      "kind": "read",
+      "layer": "context",
+      "file": "params/config_wbft.go",
+      "symbol": "SystemContracts",
+      "start_line": 146,
+      "end_line": 164,
+      "role": "Source of truth for the system-contract address whitelist. Fields: GovValidator, NativeCoinAdapter, GovMinter, GovMasterMinter, GovCouncil — each *SystemContract with Address common.Address.",
+      "change_summary": "(no change) — reference only."
+    },
+    {
+      "kind": "read",
+      "layer": "context",
+      "file": "params/config_wbft.go",
+      "symbol": "AnzeonConfig",
+      "start_line": 55,
+      "end_line": 59,
+      "role": "ChainConfig.Anzeon.SystemContracts is the path used by the new helper.",
+      "change_summary": "(no change) — reference only."
+    },
+    {
+      "kind": "read",
+      "layer": "context",
+      "file": "miner/worker.go",
+      "symbol": "worker.getGasTipFromContract",
+      "start_line": 1209,
+      "end_line": 1225,
+      "role": "Reference for how the producer-side already nil-guards `w.chainConfig.Anzeon.SystemContracts`. New helper mirrors this guard.",
+      "change_summary": "(no change) — reference only."
+    }
+  ],
+  "ckv_top_hits": [
+    {"file": "params/config_wbft.go", "lines": "160-164", "topic": "SystemContract struct"},
+    {"file": "core/txpool/blobpool/blobpool.go", "lines": "1018-1085", "topic": "BlobPool.SetGasTip asymmetry"},
+    {"file": "core/txpool/legacypool/legacypool.go", "lines": "472-496", "topic": "LegacyPool.SetGasTip asymmetry"},
+    {"file": "miner/worker.go", "lines": "1209-1225", "topic": "getGasTipFromContract: chainconfig.Anzeon.SystemContracts nil guard pattern"},
+    {"file": "eth/gasprice/anzeon.go", "lines": "90-120", "topic": "GetAnzeonTipCap (consume side, Layer 3 — out of scope)"},
+    {"file": "core/types/transaction.go", "lines": "388-403", "topic": "EffectiveGasTip uses cached tipCap first"},
+    {"file": "core/txpool/legacypool/list.go", "lines": "304-346", "topic": "list.Add nonce-ordered insertion"}
+  ],
+  "ckg_subgraphs": {
+    "LegacyPool.SetGasTip": {
+      "callers": [
+        {"file": "miner/worker.go", "symbol": "worker.setGasTipUnsafe", "via_TxPool.SetGasTip": true},
+        {"file": "core/txpool/legacypool/legacypool_test.go", "tests": ["TestRepricing", "TestMinGasPriceEnforced", "TestRepricingKeepsLocals", "TestRepricingShiftAccountAge"]}
+      ],
+      "callees": [
+        {"file": "core/txpool/legacypool/legacypool.go", "symbol": "lookup.RemotesBelowTip", "line": 2058},
+        {"file": "core/txpool/legacypool/legacypool.go", "symbol": "LegacyPool.removeTx"},
+        {"file": "core/txpool/legacypool/legacypool.go", "symbol": "pricedList.Removed"}
+      ]
+    },
+    "Transaction.SetAnzeonTipCap": {
+      "callers": [
+        {"file": "core/txpool/validation.go", "symbol": "ValidateTransactionWithState", "lines": "241-343"}
+      ]
+    },
+    "ValidateTransaction": {
+      "callers": [
+        {"file": "core/txpool/legacypool/legacypool.go", "symbol": "LegacyPool.validateTxBasics", "line": 650},
+        {"file": "core/txpool/legacypool/legacypool.go", "symbol": "LegacyPool.Add", "line": 1080},
+        {"file": "core/txpool/blobpool/blobpool.go", "symbol": "BlobPool.validateTx", "line": 1122},
+        {"file": "core/txpool/blobpool/blobpool.go", "symbol": "BlobPool.Get", "line": 1273}
+      ]
+    }
+  },
+  "concurrency_impact": {
+    "LegacyPool.SetGasTip": {
+      "depth": 3,
+      "synchronization_points": [
+        {"name": "pool.mu", "kind": "sync.RWMutex", "file": "core/txpool/legacypool/legacypool.go", "line": 240, "direction": "affected_by"}
+      ],
+      "lock_order_constraints": [
+        "pool.mu -> lookup.lock (acquired by pool.all.Range / RemotesBelowTip): consistent with rest of file",
+        "requestPromoteExecutables sends on pool.reqPromoteCh which is consumed by scheduleReorgLoop; scheduleReorgLoop calls runReorg which takes pool.mu. Therefore requestPromoteExecutables MUST be called with pool.mu released to avoid deadlock — same constraint as LegacyPool.Add line 1113-1126."
+      ]
+    }
+  },
+  "impacts": [
+    {
+      "symbol": "LegacyPool.SetGasTip",
+      "risk_level": "medium-high",
+      "risk_explanation": "Touched by mining loop (producer) and 4 unit tests. New lowering branch must preserve existing raising semantics and not introduce a lock cycle with scheduleReorgLoop. requestPromoteExecutables must be invoked after pool.mu.Unlock().",
+      "recommended_test_scope": "go test -race ./core/txpool/legacypool/... ./core/txpool/blobpool/... ./core/types/..."
+    },
+    {
+      "symbol": "LegacyPool.validateTxBasics",
+      "risk_level": "medium",
+      "risk_explanation": "Public-facing entry gate for every tx Add. Adding a system-contract bypass must not loosen the gate for any other tx (whitelist must be strict, chainconfig-derived, with nil-guards). Test fixtures using params.TestChainConfig (no Anzeon) must remain unchanged.",
+      "recommended_test_scope": "TestRepricing, TestMinGasPriceEnforced, TestMinimumGasFeeValidation, plus new TestSystemContractTxExemptFromMinTip."
+    },
+    {
+      "symbol": "LegacyPool.Pending",
+      "risk_level": "medium",
+      "risk_explanation": "Called by every sealing pass. Adding a system-contract skip to the truncation loop must not reorder nonce-sorted txs; semantics is `skip i-th tx for truncation purposes but keep iterating`.",
+      "recommended_test_scope": "TestRepricing (locals path is the analog), TestSystemContractTxExemptFromMinTip with Pending() inspection."
+    },
+    {
+      "symbol": "Transaction.ClearAnzeonTipCap",
+      "risk_level": "low",
+      "risk_explanation": "New method on Transaction; atomic.Value typed-nil store is the standard idiom. GetAnzeonTipCap must remain back-compat: returns nil when cleared.",
+      "recommended_test_scope": "TestEffectiveGasTipCache (new tiny unit test in core/types) verifies Set->Get->Clear->Get roundtrip."
+    },
+    {
+      "symbol": "BlobPool.SetGasTip",
+      "risk_level": "low",
+      "risk_explanation": "Symmetric mirror; blobpool's lazy reheap means no new promotion call needed.",
+      "recommended_test_scope": "go test -race ./core/txpool/blobpool/..."
+    }
+  ]
+}
