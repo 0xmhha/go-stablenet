@@ -590,8 +590,24 @@ func (pool *LegacyPool) Pending(filter txpool.PendingFilter) map[common.Address]
 	for addr, list := range pool.pending {
 		txs := list.Flatten()
 
-		// If the miner requests tip enforcement, cap the lists now
-		if minTipBig != nil && !pool.locals.contains(addr) {
+		// If the miner requests tip enforcement, cap the lists now.
+		//
+		// In Anzeon a non-authorized account always pays the block-header gas tip (the
+		// governance-set value) regardless of its transaction's tip cap, so it can never be
+		// underpriced and must be exempt from this minimum-tip cap. Otherwise, after a
+		// governance gasTip increase, such transactions would be stranded in the pending pool
+		// (their cached Anzeon tip cap, frozen at admission time, can lag the raised minimum) —
+		// which previously blocked e.g. a "restore gasTip" proposal from ever being mined.
+		// Authorization is read from the pool's current state, mirroring the admission-side
+		// rule in ValidateTransactionWithState. This must not depend on the (possibly stale)
+		// per-transaction effective-tip cache.
+		enforceTip := minTipBig != nil && !pool.locals.contains(addr)
+		if enforceTip && pool.chainconfig.AnzeonEnabled() {
+			if st := pool.currentState; st != nil && !st.IsAuthorized(addr) {
+				enforceTip = false
+			}
+		}
+		if enforceTip {
 			for i, tx := range txs {
 				if tx.EffectiveGasTipIntCmp(minTipBig, pool.anzeonTipEnv) < 0 {
 					txs = txs[:i]
@@ -693,6 +709,14 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction, local bool) error {
 			return nil
 		},
 		AnzeonTipEnv: pool.anzeonTipEnv, // Enable caching of Anzeon tip cap during validation
+		// Enforce the minimum gas tip using the Anzeon effective tip (header-dictated for
+		// non-authorized accounts). Local transactions are exempt, mirroring validateTxBasics.
+		MinTip: func() *big.Int {
+			if local {
+				return nil
+			}
+			return pool.gasTip.Load().ToBig()
+		}(),
 	}
 	if err := txpool.ValidateTransactionWithState(tx, pool.signer, opts); err != nil {
 		return err

@@ -115,8 +115,19 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 	if tx.Gas() < intrGas {
 		return fmt.Errorf("%w: gas %v, minimum needed %v", core.ErrIntrinsicGas, tx.Gas(), intrGas)
 	}
-	// Ensure the gasprice is high enough to cover the requirement of the calling pool
-	if tx.GasTipCapIntCmp(opts.MinTip) < 0 {
+	// Ensure the gasprice is high enough to cover the requirement of the calling pool.
+	//
+	// In Anzeon, the effective gas tip of a transaction from a non-authorized account is
+	// dictated by the block header (see eth/gasprice.AnzeonTipEnv), not by the transaction's
+	// own tip cap. The raw GasTipCap is therefore not a meaningful admission gate: comparing
+	// it against the pool minimum wrongly rejected transactions as underpriced after a
+	// governance gasTip change raised the minimum above the tx's raw tip cap — even though
+	// the sender ultimately pays the header-mandated tip. This previously stranded e.g. a
+	// "restore gasTip" governance proposal in the pending pool. The authoritative,
+	// Anzeon-aware minimum-tip check is performed in ValidateTransactionWithState, which can
+	// access the AnzeonTipEnv (and thus account authorization) safely under the pool lock;
+	// affordability remains bounded below by the MinBaseFee+MinTip fee-cap check that follows.
+	if !opts.Config.AnzeonEnabled() && tx.GasTipCapIntCmp(opts.MinTip) < 0 {
 		return fmt.Errorf("%w: gas tip cap %v, minimum needed %v", ErrUnderpriced, tx.GasTipCap(), opts.MinTip)
 	}
 	if opts.Config.IsLondon(head.Number) && opts.Config.AnzeonEnabled() {
@@ -231,6 +242,13 @@ type ValidationOptionsWithState struct {
 	// AnzeonTipEnv is an optional environment for computing and caching
 	// the Anzeon gas tip cap during validation to avoid repeated state queries during reheap.
 	AnzeonTipEnv types.AnzeonGasTipEnv
+
+	// MinTip is the minimum gas tip required by the calling pool, enforced in an Anzeon-aware
+	// way: an authorized account (which pays its own tip cap) must offer at least this tip,
+	// whereas a non-authorized account is exempt because it pays the header-dictated tip
+	// regardless. A nil MinTip disables the check (e.g. for local transactions, which are
+	// exempt from the minimum). Only consulted when Config.AnzeonEnabled() is true.
+	MinTip *big.Int
 }
 
 // ValidateTransactionWithState is a helper method to check whether a transaction
@@ -252,6 +270,24 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 		}
 		if to := tx.To(); to != nil && opts.State.IsBlacklisted(*to) {
 			return &core.ErrBlacklistedAccount{Address: *to}
+		}
+	}
+	// Enforce the calling pool's minimum gas tip in an Anzeon-aware way. This is the
+	// stateful counterpart of the raw-tip underpriced check in ValidateTransaction, which
+	// is skipped under Anzeon (see the comment there).
+	//
+	// In Anzeon, a non-authorized account does not control its gas tip: it always pays the
+	// block-header gas tip (the governance-set value), regardless of the tip cap on its
+	// transaction — this is how blocks are filled (legacypool.Pending) and fees are charged.
+	// The per-account minimum-tip gate is therefore meaningful only for authorized accounts,
+	// which pay their own tip cap. For non-authorized accounts the raw tip cap is irrelevant
+	// and must not be used to reject the transaction; affordability of the network minimum is
+	// still ensured by the MinBaseFee+MinTip fee-cap check in ValidateTransaction. Without this
+	// carve-out, raising gasTip via governance stranded any pending transaction whose raw tip
+	// cap fell below the new minimum (e.g. a subsequent "restore gasTip" proposal).
+	if opts.Config.AnzeonEnabled() && opts.MinTip != nil {
+		if opts.State.IsAuthorized(from) && tx.GasTipCapIntCmp(opts.MinTip) < 0 {
+			return fmt.Errorf("%w: gas tip cap %v, minimum needed %v", ErrUnderpriced, tx.GasTipCap(), opts.MinTip)
 		}
 	}
 	next := opts.State.GetNonce(from)

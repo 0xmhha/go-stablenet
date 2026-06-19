@@ -1163,6 +1163,10 @@ func (p *BlobPool) validateTx(tx *types.Transaction) error {
 			}
 			return nil
 		},
+		// Under Anzeon the raw-tip underpriced check in ValidateTransaction is skipped, so the
+		// minimum-tip rule is enforced here (for authorized accounts; non-authorized accounts
+		// pay the header-dictated tip). Mirrors the legacy pool's stateful validation.
+		MinTip: p.gasTip.ToBig(),
 	}
 	if err := txpool.ValidateTransactionWithState(tx, p.signer, stateOpts); err != nil {
 		return err
