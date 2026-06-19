@@ -72,9 +72,6 @@ type Transaction struct {
 
 	// WEMIX fee delegation
 	feePayer atomic.Value
-
-	// Anzeon gas tip cap cache (set during pool validation, used during reheap)
-	anzeonTipCap atomic.Value
 }
 
 // NewTx creates a new transaction.
@@ -394,11 +391,12 @@ func (tx *Transaction) EffectiveGasTip(anzeonTipEnv AnzeonGasTipEnv) (*big.Int, 
 	if gasFeeCap.Cmp(anzeonTipEnv.GetBaseFee()) == -1 {
 		err = ErrGasFeeCapTooLow
 	}
-	// Use cached tipCap if available, otherwise fetch from anzeonTipEnv
-	tipCap := tx.GetAnzeonTipCap()
-	if tipCap == nil {
-		tipCap = anzeonTipEnv.GetAnzeonTipCap(tx)
-	}
+	// Always resolve the Anzeon tip cap from the environment. For normal (unauthorized)
+	// accounts this is the live network gas tip from the current block header; it must
+	// not be cached per-transaction, otherwise a tx submitted before a governance
+	// gasTip change keeps a stale tip forever and gets stuck in the pending pool (PR-77).
+	// The environment itself caches the decoded header tip per block, so this stays cheap.
+	tipCap := anzeonTipEnv.GetAnzeonTipCap(tx)
 	return math.BigMin(tipCap, new(big.Int).Sub(gasFeeCap, anzeonTipEnv.GetBaseFee())), err
 }
 
@@ -407,22 +405,6 @@ func (tx *Transaction) EffectiveGasTip(anzeonTipEnv AnzeonGasTipEnv) (*big.Int, 
 func (tx *Transaction) EffectiveGasTipValue(anzeonTipEnv AnzeonGasTipEnv) *big.Int {
 	effectiveTip, _ := tx.EffectiveGasTip(anzeonTipEnv)
 	return effectiveTip
-}
-
-// SetAnzeonTipCap caches the Anzeon tip cap for this transaction.
-// This is set during pool validation to avoid repeated state queries during reheap.
-func (tx *Transaction) SetAnzeonTipCap(tipCap *big.Int) {
-	if tipCap != nil {
-		tx.anzeonTipCap.Store(new(big.Int).Set(tipCap))
-	}
-}
-
-// GetAnzeonTipCap returns the cached Anzeon tip cap, or nil if not cached.
-func (tx *Transaction) GetAnzeonTipCap() *big.Int {
-	if cached := tx.anzeonTipCap.Load(); cached != nil {
-		return cached.(*big.Int)
-	}
-	return nil
 }
 
 // EffectiveGasTipCmp compares the effective gasTipCap of two transactions assuming the given base fee.

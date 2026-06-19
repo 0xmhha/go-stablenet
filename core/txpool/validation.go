@@ -332,12 +332,12 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 		}
 	*/
 
-	// Cache the Anzeon tip cap to avoid repeated state queries during reheap
-	// Only cache if not already set (to preserve original value during reinject)
-	if opts.AnzeonTipEnv != nil && tx.GetAnzeonTipCap() == nil {
-		tipCap := opts.AnzeonTipEnv.GetAnzeonTipCap(tx)
-		tx.SetAnzeonTipCap(tipCap)
-	}
+	// NOTE: The Anzeon tip cap is intentionally NOT cached on the transaction here.
+	// For normal (unauthorized) accounts the effective tip is the live network gas tip
+	// read from the current block header; caching it at submission time would freeze a
+	// stale value and cause the tx to be wrongly filtered (stuck in the pending pool)
+	// after a governance gasTip change. EffectiveGasTip resolves it from the environment
+	// on demand, and the environment caches the decoded header tip per block (PR-77).
 
 	return nil
 }

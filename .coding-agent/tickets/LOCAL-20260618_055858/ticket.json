@@ -1,0 +1,8 @@
+{
+  "ticket_id": "LOCAL-20260618_055858",
+  "type": "bugfix",
+  "summary": "거버넌스 GasTip 복원 제안 시 트랜잭션 Pending Pool 정체 이슈",
+  "description": "## 작업 유형: bugfix\n\n## 요약\nStableNet에서 거버넌스(GovValidator)를 통해 gasTip 값을 변경(27600→30000 Gwei)한 뒤, 다시 27600 Gwei로 복원하는 거버넌스 제안 트랜잭션을 제출하면 해당 트랜잭션이 pending pool에 계속 남아 블록에 포함되지 않는 문제.\n\n## 재현 방법\n1. 초기 상태: gasTip = 27600 Gwei\n2. 거버넌스 제안 → 30000 Gwei로 변경 (정상 반영)\n3. 이후 27600 Gwei로 복원하기 위한 거버넌스 제안 트랜잭션 제출\n\n## 기대 동작\n- 복원 제안 트랜잭션이 블록에 포함되고 GasTip이 다시 27600 Gwei로 적용됨.\n- GasTip 거버넌스 제안은 제안 포함 블록(N)이 아니라 N+1 블록부터 적용됨.\n\n## 실제 동작\n- 복원 제안 트랜잭션이 pending pool에 지속적으로 남아 블록에 포함되지 않으며 상태 변화 없음. 동일 조건 반복 재현.\n\n## 영향 범위(모듈, 심각도)\n- consensus/wbft (WBFTExtra.GasTip, 헤더 extradata), txpool gas tip 필터링, 거버넌스 파라미터 적용 시점. 심각도: High (트랜잭션 정체).\n\n## 수용 기준\n- 통과 유닛테스트: GasTip 거버넌스 제안 실행 후 변경값이 제안 포함 블록(N)이 아닌 N+1 블록부터 적용됨을 블록 헤더 extradata(WBFTExtra.GasTip)에서 검증. 거버넌스 파라미터 직접 조회 금지.\n- 시나리오: 초기 27600 확인 → 1차 제안 30000 (블록 N) → Block N=27600, Block N+1=30000 → 2차 제안 27600 (블록 M) → Block M=30000, Block M+1=27600.\n- 두 제안 모두 생성·승인·블록 포함 성공. N/N+1, M/M+1 값 일치. Consensus error / chain halt / execution error 없음.\n- 테스트는 simulation으로 consensus/wbft/backend/multiengine_test.go 참고하여 체인 시뮬레이션 환경에서 검증.",
+  "requirement_source": "local",
+  "_filter_metadata": { "scan_result": "CLEAN", "redacted_count": 0 }
+}

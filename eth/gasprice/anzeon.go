@@ -33,8 +33,12 @@ type AnzeonTipEnv struct {
 	stateAt      func(common.Hash) (*state.StateDB, error)
 	currentBlock *types.Header
 	currentState *state.StateDB
-	baseFee      *big.Int
-	signer       types.Signer
+	// currentHeaderTip caches the decoded WBFTExtra.GasTip of currentBlock so that
+	// GetAnzeonTipCap does not re-decode the header extradata on every call (e.g.
+	// during priced-list reheaps). It is refreshed whenever currentBlock changes.
+	currentHeaderTip *big.Int
+	baseFee          *big.Int
+	signer           types.Signer
 }
 
 // NewAnzeonTipEnv creates a new AnzeonTipEnv instance for use in transaction pool.
@@ -51,15 +55,28 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
+	// Already pointed at this exact header; nothing to refresh.
+	if env.currentBlock != nil && env.currentBlock.Hash() == header.Hash() {
+		return
+	}
+	// Reload the (expensive) state snapshot only when the state root actually changes.
+	// Consecutive blocks frequently share a state root (e.g. empty blocks), so this
+	// avoids redundant state lookups.
 	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+	env.currentBlock = header
+	// The governance gas tip lives in the header extradata (WBFTExtra.GasTip), not in
+	// the state trie, so it must be refreshed for every new header even when the state
+	// root is unchanged. Empty blocks following a gasTip change share the previous
+	// block's state root while carrying the new header tip; keying purely on Root would
+	// otherwise leave a stale tip and wrongly filter normal-account txs (PR-77).
+	env.currentHeaderTip = header.GasTip()
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
@@ -108,11 +125,11 @@ func (env *AnzeonTipEnv) GetAnzeonTipCap(tx *types.Transaction) *big.Int {
 		env.currentState, _ = env.stateAt(env.currentBlock.Root)
 	}
 
-	// For unauthorized accounts, use block header's gas tip
+	// For unauthorized accounts, use block header's gas tip (cached per block)
 	if env.currentState != nil &&
 		!env.currentState.IsAuthorized(from) &&
-		env.currentBlock.GasTip() != nil {
-		return env.currentBlock.GasTip()
+		env.currentHeaderTip != nil {
+		return env.currentHeaderTip
 	}
 
 	// For authorized accounts or if state is unavailable, use transaction's gas tip cap
