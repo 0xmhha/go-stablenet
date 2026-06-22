@@ -51,14 +51,21 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
+	// Refresh the header pointer and signer on every head change so env.currentBlock
+	// always reflects the latest head (the contract the doc-comment promises). The
+	// expensive stateAt re-read stays guarded by the state-root change, preserving the
+	// optimisation for empty / state-unchanged blocks without conflating header identity
+	// with state identity (PR-77: empty blocks after a governance gasTip change share the
+	// prior state root yet carry the updated GasTip in their header).
+	rootChanged := env.currentBlock == nil || env.currentBlock.Root != header.Root
+	env.currentBlock = header
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+	if rootChanged {
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
 }
 

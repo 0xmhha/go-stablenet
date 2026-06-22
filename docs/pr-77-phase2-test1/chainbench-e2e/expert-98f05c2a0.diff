@@ -1,0 +1,75 @@
+commit 98f05c2a0c161ac67a1d50f254ca4847c8fac2a5
+Author: hmlee(WM) <hmlee@wemade.com>
+Date:   Mon May 4 09:41:13 2026 +0900
+
+    fix: refresh AnzeonTipEnv current block when GasTip changes (#77)
+    
+    * fix: refresh AnzeonTipEnv current block when GasTip changes
+    
+    SetCurrentBlock only checked state root equality, so empty blocks after a governance gasTip change left currentBlock stuck at the change block whose header GasTip still reflected the pre-change value.
+    During this window, non-validator transactions were validated using a stale GasTip, causing EffectiveGasTip to remain below minTip.
+    To fix this, add a gasTipChanged() check to the update condition so that currentBlock advances when the header GasTip value changes, even if the state root remains the same.
+    
+    * fix: drop remotes using AnzeonTipCap in RemotesBelowTip
+
+diff --git a/core/txpool/legacypool/legacypool.go b/core/txpool/legacypool/legacypool.go
+index c1fcdd32b..636857d5f 100644
+--- a/core/txpool/legacypool/legacypool.go
++++ b/core/txpool/legacypool/legacypool.go
+@@ -2055,10 +2055,17 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
+ }
+ 
+ // RemotesBelowTip finds all remote transactions below the given tip threshold.
++// For unauthorized accounts, AnzeonTipCap is cached at pool entry time as block.GasTip(),
++// which is the actual effective tip used during execution. If that cached value is below
++// the threshold, the tx is dropped even when tx.GasTipCap() is above it.
+ func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
+ 	found := make(types.Transactions, 0, 128)
+ 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
+-		if tx.GasTipCapIntCmp(threshold) < 0 {
++		tipcap := tx.GetAnzeonTipCap()
++		if tipcap == nil {
++			tipcap = tx.GasTipCap()
++		}
++		if tipcap.Cmp(threshold) < 0 {
+ 			found = append(found, tx)
+ 		}
+ 		return true
+diff --git a/eth/gasprice/anzeon.go b/eth/gasprice/anzeon.go
+index 6711da68b..67d7bbdf2 100644
+--- a/eth/gasprice/anzeon.go
++++ b/eth/gasprice/anzeon.go
+@@ -47,11 +47,14 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
+ 
+ // SetCurrentBlock updates the current block header and signer.
+ // This should be called when the blockchain head changes.
++// The block is refreshed if the state root or the GasTip value changes.
++// GasTip must be checked separately because empty blocks share the same root
++// as the governance-change block but carry the updated GasTip in their header.
+ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
+ 	if header == nil {
+ 		return
+ 	}
+-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
++	if env.currentBlock == nil || env.currentBlock.Root != header.Root || gasTipChanged(env.currentBlock.GasTip(), header.GasTip()) {
+ 		env.currentBlock = header
+ 		if header.Root != (common.Hash{}) {
+ 			env.currentState, _ = env.stateAt(header.Root)
+@@ -84,6 +87,17 @@ func (env *AnzeonTipEnv) GetBaseFee() *big.Int {
+ 	return nil
+ }
+ 
++// gasTipChanged reports whether two GasTip values differ.
++func gasTipChanged(a, b *big.Int) bool {
++	if a == nil && b == nil {
++		return false
++	}
++	if a == nil || b == nil {
++		return true
++	}
++	return a.Cmp(b) != 0
++}
++
+ // GetAnzeonTipCap returns the effective gas tip cap for a transaction in the Anzeon network.
+ // For unauthorized accounts, it returns the block header's gas tip.
+ // For authorized accounts (validators/minters), it returns the transaction's original gas tip cap.

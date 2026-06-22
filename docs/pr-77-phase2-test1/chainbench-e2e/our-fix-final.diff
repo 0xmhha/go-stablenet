@@ -1,0 +1,54 @@
+diff --git a/core/txpool/legacypool/legacypool.go b/core/txpool/legacypool/legacypool.go
+index c1fcdd32b..6b4d1adb1 100644
+--- a/core/txpool/legacypool/legacypool.go
++++ b/core/txpool/legacypool/legacypool.go
+@@ -2055,10 +2055,19 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
+ }
+ 
+ // RemotesBelowTip finds all remote transactions below the given tip threshold.
++// For unauthorized (non-validator) accounts the effective tip is the block GasTip
++// floor (cached on the tx at pool entry / recomputed via anzeonTipEnv), NOT the raw
++// maxPriorityFeePerGas, so the comparison must use the Anzeon-effective tip; otherwise
++// a tx with a high raw tip but a low effective tip survives a floor raise despite being
++// permanently unminable.
+ func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
+ 	found := make(types.Transactions, 0, 128)
+ 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
+-		if tx.GasTipCapIntCmp(threshold) < 0 {
++		tipcap := tx.GetAnzeonTipCap()
++		if tipcap == nil {
++			tipcap = tx.GasTipCap()
++		}
++		if tipcap.Cmp(threshold) < 0 {
+ 			found = append(found, tx)
+ 		}
+ 		return true
+diff --git a/eth/gasprice/anzeon.go b/eth/gasprice/anzeon.go
+index 6711da68b..caff706f0 100644
+--- a/eth/gasprice/anzeon.go
++++ b/eth/gasprice/anzeon.go
+@@ -51,14 +51,21 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
+ 	if header == nil {
+ 		return
+ 	}
+-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
+-		env.currentBlock = header
++	// Refresh the header pointer and signer on every head change so env.currentBlock
++	// always reflects the latest head (the contract the doc-comment promises). The
++	// expensive stateAt re-read stays guarded by the state-root change, preserving the
++	// optimisation for empty / state-unchanged blocks without conflating header identity
++	// with state identity (PR-77: empty blocks after a governance gasTip change share the
++	// prior state root yet carry the updated GasTip in their header).
++	rootChanged := env.currentBlock == nil || env.currentBlock.Root != header.Root
++	env.currentBlock = header
++	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
++	if rootChanged {
+ 		if header.Root != (common.Hash{}) {
+ 			env.currentState, _ = env.stateAt(header.Root)
+ 		} else {
+ 			env.currentState = nil
+ 		}
+-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+ 	}
+ }
+ 

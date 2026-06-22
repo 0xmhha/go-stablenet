@@ -1,0 +1,14 @@
+{
+  "test_file": "/Users/wm-it-25_0220/Work/github/test/pr-77/eth/gasprice/anzeon_repro_test.go",
+  "test_name": "TestReproduce_GasTipPolicyStaleOnIdleBlocks",
+  "package": "github.com/ethereum/go-ethereum/eth/gasprice",
+  "run_cmd": "go test -count=1 -run 'TestReproduce_GasTipPolicyStaleOnIdleBlocks' ./eth/gasprice/...",
+  "race": false,
+  "red_confirmed": true,
+  "red_output": "--- FAIL: TestReproduce_GasTipPolicyStaleOnIdleBlocks (0.00s)\n    anzeon_repro_test.go:190: non-validator effective tip is stale: got 5000000000, want 1000000000 (env.currentBlock should track the latest header even when only the GasTip changes and state Root is unchanged)\n    anzeon_repro_test.go:197: BUG REPRODUCED: non-validator tip resolved to OLD policy 5000000000 (header N.GasTip), not NEW policy 1000000000 (header N+1.GasTip). AnzeonTipEnv.SetCurrentBlock at eth/gasprice/anzeon.go:54 skipped the header update because parent.Root == child.Root on the empty block.\nFAIL\nFAIL\tgithub.com/ethereum/go-ethereum/eth/gasprice\t0.685s",
+  "authored_cycle": 1,
+  "green_confirmed": true,
+  "green_at_head": true,
+  "red_at_parent": true,
+  "notes": "RED confirmed against pinned buggy parent 0bf2f4d1bfeb6605006d556957ef8c045d8f8ed8. The test exercises only AnzeonTipEnv (eth/gasprice/anzeon.go) directly — no full chain spin-up — so it is fast, deterministic, and unaffected by unrelated subsystems. Also documents the distinguishing feature: validator (authorized) senders are NOT affected (their branch in GetAnzeonTipCap bypasses env.currentBlock.GasTip())."
+}

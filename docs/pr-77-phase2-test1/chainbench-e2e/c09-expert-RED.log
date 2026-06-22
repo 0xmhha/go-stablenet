@@ -1,0 +1,36 @@
+[0;36m[TEST][0m  Starting: regression/c-anzeon/c-09-remotesbelowtip-anzeon-eviction
+[GOV-DEBUG] gov_propose: tx_hash=0x11065b3106903b206182025d4da1507e0ca6b866ac886e0137de8e527c64af92
+[GOV]  proposalId=1 (status after propose=1)
+[GOV]  approved by 0x2493a84a8f83cb87fdcbe0bb3b2d313f69a58d3c (tx=0x8fdf285fd5ec4f4c0ff01bbd7958a56b95822ea547dde6b6d9940c2e06086f17, receipt.status=0x1, proposal.status=3)
+[GOV]  auto-executed during approve (status=Executed)
+[0;32m  [PASS][0m governance LOWER gasTip -> 1000000000000 succeeded: '0x1' == '0x1'
+  Waiting for block 35 (current: 32, 0s/30s)
+  Block 35 reached (target: 35)
+[INFO]  header.GasTip after lower = 1000000000000 wei (want 1000000000000)
+[0;32m  [PASS][0m floor lowered and reflected in header (effective tip baseline for unauthorized): '1000000000000' == '1000000000000'
+/Users/wm-it-25_0220/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+[INFO]  queued tx1 (high raw tip, unauthorized): 0xb00888198a34d6f72ae759c46913343c732b189a6442560cc325a9364e8b86b5
+[0;32m  [PASS][0m future-nonce tx1 accepted into pool (queued): found '0x'
+/Users/wm-it-25_0220/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+[0;32m  [PASS][0m tx1 present in pool before floor raise: 'true' == 'true'
+[GOV-DEBUG] gov_propose: tx_hash=0x499748f599eef837c6c05d544177dbd5d5e5e2eee43f7e07eac66ec514234b5f
+[GOV]  proposalId=2 (status after propose=1)
+[GOV]  approved by 0x2493a84a8f83cb87fdcbe0bb3b2d313f69a58d3c (tx=0x3880ed0ea147b74e2620228f042dc9b5489fc7b9487fde914e57b777a5175e54, receipt.status=0x1, proposal.status=3)
+[GOV]  auto-executed during approve (status=Executed)
+[0;32m  [PASS][0m governance RAISE gasTip -> 30000000000000 succeeded: '0x1' == '0x1'
+[INFO]  header.GasTip after raise = 1000000000000 wei (want 30000000000000)
+  Waiting for block 43 (current: 39, 0s/30s)
+  Block 43 reached (target: 43)
+/Users/wm-it-25_0220/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+[INFO]  tx1 still in pool after raise? true  (effective tip 1000000000000 < new floor 30000000000000 => should be EVICTED)
+[0;31m  [FAIL][0m RemotesBelowTip evicts the unminable unauthorized tx using its effective AnzeonTipCap (1000000000000 < 30000000000000) — PR-77 2nd-defect oracle: expected truthy, got 'false'
+
+[0;36m[TEST][0m  Result: regression/c-anzeon/c-09-remotesbelowtip-anzeon-eviction — failed
+         Total: 6 | Pass: 5 | Fail: 1 | Duration: 17s
+[0;31m  Failures:[0m
+    - RemotesBelowTip evicts the unminable unauthorized tx using its effective AnzeonTipCap (1000000000000 < 30000000000000) — PR-77 2nd-defect oracle: expected truthy, got 'false'
+         Result file: /Users/wm-it-25_0220/.chainbench/state/results/regression_c-anzeon_c-09-remotesbelowtip-anzeon-eviction_20260622_204320.json
+[0;33m[FAIL-CTX][0m Failure context saved to /Users/wm-it-25_0220/.chainbench/state/failures/regression_c-anzeon_c-09-remotesbelowtip-anzeon-eviction_20260622_204320

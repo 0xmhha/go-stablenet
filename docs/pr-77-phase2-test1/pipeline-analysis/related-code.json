@@ -1,0 +1,79 @@
+{
+  "pack": {
+    "query": "After governance changes the minimum gas tip (priority fee / minTip) policy, normal non-validator account transactions get rejected for a while; symptom resolves after a new block with transactions is produced.",
+    "builder_version": "cks-mcp/0.0.1-dev",
+    "indexed_head": "0bf2f4d1bfeb6605006d556957ef8c045d8f8ed8",
+    "integrity_hash": "880fe61cc9e861773bd5a48c36d0901616e72da1b72a66e549fb66b642bf9c37",
+    "citations": [
+      {"file": "eth/gasprice/anzeon.go", "start_line": 50, "end_line": 63, "role": "broken_edge_source", "note": "SetCurrentBlock — the Root != header.Root guard SKIPS the header swap on empty (Root-unchanged) blocks, leaving env.currentBlock pinned to the previous header."},
+      {"file": "eth/gasprice/anzeon.go", "start_line": 87, "end_line": 120, "role": "consumer", "note": "GetAnzeonTipCap — for NON-authorized senders returns env.currentBlock.GasTip(); for authorized (validator) senders returns tx.GasTipCap(). This asymmetry produces the ticket's distinguishing feature."},
+      {"file": "core/types/block.go", "start_line": 111, "end_line": 117, "role": "producer", "note": "Header.GasTip() — extracts WBFTExtra.GasTip from the header. Each header's WBFTExtra.GasTip is sourced from the PARENT state in engine.getGasTip, so block N's header carries the OLD policy and block N+1's header carries the NEW policy."},
+      {"file": "consensus/wbft/engine/engine.go", "start_line": 622, "end_line": 645, "role": "producer", "note": "Engine.getGasTip — reads gasTip from PARENT state, then WriteGasTip stamps it into the header WBFTExtra."},
+      {"file": "consensus/wbft/engine/engine.go", "start_line": 599, "end_line": 604, "role": "producer", "note": "WriteGasTip applies the value into WBFTExtra.GasTip."},
+      {"file": "consensus/wbft/backend/engine.go", "start_line": 329, "end_line": 378, "role": "producer", "note": "Backend InheritExtra path — second producer site that re-stamps GasTip on header construction."},
+      {"file": "core/txpool/legacypool/legacypool.go", "start_line": 340, "end_line": 350, "role": "caller_init", "note": "LegacyPool.Init — first SetCurrentBlock call on pool startup."},
+      {"file": "core/txpool/legacypool/legacypool.go", "start_line": 575, "end_line": 619, "role": "caller_pending", "note": "LegacyPool.Pending — SetCurrentBlock(filter.Header) on every miner snapshot; then filters pending using EffectiveGasTipIntCmp(MinTip, anzeonTipEnv)."},
+      {"file": "core/txpool/legacypool/legacypool.go", "start_line": 1446, "end_line": 1542, "role": "caller_reset", "note": "LegacyPool.reset — fires on ChainHeadEvent for every new head (empty or not); calls anzeonTipEnv.SetCurrentBlock(newHead) at line 1536. The bug is downstream of THIS call: it sees a new head but the inner guard rejects the update."},
+      {"file": "core/txpool/legacypool/legacypool.go", "start_line": 1395, "end_line": 1410, "role": "caller_reorg", "note": "Reorg loop SetBaseFee on each new head."},
+      {"file": "core/types/transaction.go", "start_line": 388, "end_line": 426, "role": "downstream_cache", "note": "Transaction.EffectiveGasTip + anzeonTipCap atomic cache. The cached value on a tx is sourced from env.currentBlock.GasTip() during validation — it's a SECONDARY cache; the root source is env.currentBlock."},
+      {"file": "core/txpool/validation.go", "start_line": 55, "end_line": 174, "role": "validator", "note": "ValidateTransaction — tx.GasTipCapIntCmp(opts.MinTip) check uses pool.gasTip (refreshed promptly via worker.SetGasTip)."},
+      {"file": "core/txpool/validation.go", "start_line": 335, "end_line": 343, "role": "downstream_cache_writer", "note": "ValidateTransactionWithState — caches tx.anzeonTipCap via GetAnzeonTipCap(tx). This is where stale env.currentBlock leaks into per-tx cache."},
+      {"file": "miner/worker.go", "start_line": 1200, "end_line": 1225, "role": "secondary_path", "note": "worker.updateGasTipFromContract — refreshes worker.tip and calls TxPool().SetGasTip on every new block. This path IS refreshed promptly even on empty blocks (NOT the source of the bug)."},
+      {"file": "miner/worker.go", "start_line": 361, "end_line": 389, "role": "secondary_path", "note": "worker.setGasTip → setGasTipUnsafe → TxPool().SetGasTip. Updates pool.gasTip (a SEPARATE atomic from env.currentBlock)."},
+      {"file": "core/blockchain.go", "start_line": 1853, "end_line": 1864, "role": "trigger", "note": "Block import path: bc.gasTipUpdater(state) fires inside go-routine after writeBlockAndSetHead. This refreshes pool.gasTip but NOT env.currentBlock — the latter is updated only via the ChainHeadEvent → pool.reset → SetCurrentBlock path, which is where the broken guard sits."}
+    ]
+  },
+  "ckv": [
+    {"file": "systemcontracts/solidity/v1/GovValidator.sol", "start_line": 178, "end_line": 184, "symbol": "GovValidator.proposeGasTip", "note": "Governance entry point that updates contract storage gasTip — the trigger for the entire bug scenario."},
+    {"file": "systemcontracts/solidity/v1/GovValidator.sol", "start_line": 186, "end_line": 190, "symbol": "GovValidator._setGasTip"},
+    {"file": "systemcontracts/gov_validator.go", "start_line": 212, "end_line": 215, "symbol": "GetGasTip", "note": "Reads gasTip from GovValidator storage slot 0x39 — used by both worker.getGasTipFromContract and engine.getGasTip."}
+  ],
+  "ckg": {
+    "subgraphs": [
+      {
+        "seed": "AnzeonTipEnv.SetCurrentBlock",
+        "callers": [
+          {"file": "core/txpool/legacypool/legacypool.go", "start_line": 346, "note": "Init"},
+          {"file": "core/txpool/legacypool/legacypool.go", "start_line": 585, "note": "Pending"},
+          {"file": "core/txpool/legacypool/legacypool.go", "start_line": 1364, "note": "reorg loop"},
+          {"file": "core/txpool/legacypool/legacypool.go", "start_line": 1536, "note": "reset (the ChainHeadEvent-driven call — main production path)"}
+        ]
+      },
+      {
+        "seed": "AnzeonTipEnv.GetAnzeonTipCap",
+        "callers": [
+          {"file": "core/txpool/validation.go", "start_line": 337, "end_line": 340, "note": "ValidateTransactionWithState — caches anzeonTipCap on the tx."},
+          {"file": "core/types/transaction.go", "start_line": 400, "note": "EffectiveGasTip — fallback when tx cache is nil; used by EffectiveGasTipCmp + EffectiveGasTipIntCmp in priced list and Pending() filter."}
+        ]
+      }
+    ],
+    "concurrency_impact": [
+      {"seed": "AnzeonTipEnv.SetCurrentBlock", "not_found_via_canonical_id": true, "note": "Concurrency analysis: SetCurrentBlock is invoked under pool.mu.Lock() in reset (line 1473)/Pending (line 575)/Init (sequenced before goroutines start) — so writes to env.currentBlock are serialized. GetAnzeonTipCap reads env.currentBlock without the pool lock when called from EffectiveGasTip on a transaction (e.g. inside priceHeap.cmp during Reheap). The fix must NOT introduce a new lock that breaks this layering; updating the header pointer atomically (or under the same pool.mu) suffices."}
+    ]
+  },
+  "impacts": [
+    {
+      "seed": "AnzeonTipEnv.SetCurrentBlock",
+      "category": "callers",
+      "production_call_sites": [
+        "core/txpool/legacypool/legacypool.go:346 (Init)",
+        "core/txpool/legacypool/legacypool.go:585 (Pending — per-mining snapshot)",
+        "core/txpool/legacypool/legacypool.go:1536 (reset — ChainHeadEvent fires this on EVERY new head)"
+      ],
+      "downstream_effect": "All non-validator-sender effective-tip computations route through env.currentBlock.GasTip(). Stale env.currentBlock corrupts: (1) Pending() filter for the miner, (2) anzeonTipCap cache on freshly-validated txs in ValidateTransactionWithState, (3) priceHeap ordering during Reheap."
+    }
+  ],
+  "domain_classification": {
+    "primary_domain": "txpool",
+    "domains": ["txpool", "consensus", "miner", "governance"],
+    "confidence": "high",
+    "complexity": "moderate",
+    "concurrency_sensitive": true,
+    "reasoning": "Touches txpool (legacypool) and consensus-engine produced state (Header.GasTip via WBFTExtra). Concurrent code paths share env.currentBlock between pool reset/Pending writers and EffectiveGasTip readers."
+  },
+  "stablenet_invariants_relevant": [
+    "Invariant #1 (EQUAL POWER) — not violated; tip policy is administrative, not weighting.",
+    "Invariant #11 (CONCURRENCY DISCIPLINE) — the fix must not relax txpool/loop discipline; env.currentBlock writes are inside pool.mu.Lock and must stay there.",
+    "Invariant #6 (INSTANT FINALITY) — empty-block production after a governance change is normal WBFT operation; the bug is in client-local caching, not consensus."
+  ]
+}
