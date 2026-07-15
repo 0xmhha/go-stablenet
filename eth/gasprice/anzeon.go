@@ -51,15 +51,22 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
+	// Reload the (expensive) state snapshot only when the state root actually changes.
+	// Empty blocks preserve the root, so gating StateAt on the root avoids a redundant
+	// state reload per empty block.
 	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+	// Always adopt the newest header and signer so header-derived values (GasTip, BaseFee,
+	// Number, Time) never go stale. A governance GasTip change is reflected in the header
+	// even across empty blocks that keep the same state root; keying the whole update on
+	// the root previously pinned the cached GasTip at the pre-change value.
+	env.currentBlock = header
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
