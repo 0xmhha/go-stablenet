@@ -51,15 +51,23 @@ func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
+	// Re-resolve the account state only when the state root actually moves; this
+	// is the expensive step and empty/idle blocks keep the same root, so it is
+	// correctly skipped for them.
 	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
+	// Always advance the cached header and signer. Header-carried governance
+	// values (the WBFTExtra GasTip read by GetAnzeonTipCap) can change while the
+	// state root is unchanged across an idle window; gating this behind the root
+	// check would pin the env to a stale GasTip and wrongly drop correctly-priced
+	// transactions (the restore-proposal-stuck bug).
+	env.currentBlock = header
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 }
 
 // SetBaseFee updates the base fee for gas price calculations.
