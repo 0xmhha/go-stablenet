@@ -45,20 +45,32 @@ func NewAnzeonTipEnv(config *params.ChainConfig, stateAt func(common.Hash) (*sta
 	}
 }
 
-// SetCurrentBlock updates the current block header and signer.
+// SetCurrentBlock updates the cached chain-head header and signer.
 // This should be called when the blockchain head changes.
 func (env *AnzeonTipEnv) SetCurrentBlock(header *types.Header) {
 	if header == nil {
 		return
 	}
-	if env.currentBlock == nil || env.currentBlock.Root != header.Root {
-		env.currentBlock = header
+	// Identify the head by block hash, not by state Root. The header gasTip
+	// (WBFT extra) lags the world state by one block, so consecutive blocks after a
+	// governance gasTip change can share the same Root while carrying different
+	// gasTips; keying the refresh on Root would latch the stale change-block header
+	// and never pick up the corrected value.
+	if env.currentBlock != nil && env.currentBlock.Hash() == header.Hash() {
+		return
+	}
+	// The world state is content-addressed by Root, so re-resolve it (the expensive
+	// stateAt lookup) only when the Root actually changed; same-Root blocks share
+	// the same state.
+	rootChanged := env.currentBlock == nil || env.currentBlock.Root != header.Root
+	env.currentBlock = header
+	env.signer = types.MakeSigner(env.config, header.Number, header.Time)
+	if rootChanged {
 		if header.Root != (common.Hash{}) {
 			env.currentState, _ = env.stateAt(header.Root)
 		} else {
 			env.currentState = nil
 		}
-		env.signer = types.MakeSigner(env.config, header.Number, header.Time)
 	}
 }
 
